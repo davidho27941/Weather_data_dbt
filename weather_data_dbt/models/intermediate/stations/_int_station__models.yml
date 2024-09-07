@@ -1,0 +1,18 @@
+version: 2
+
+models:
+  - name: all_stations
+    description: >
+      Join stations' information from staging views.
+    docs:
+        show: true
+    access: public
+    columns:
+      - name: ...TBD
+
+  - name: existing_stations
+    description: >
+      Existing stations.
+  - name: revoked_stations
+    description: >
+      Revoked stations.
