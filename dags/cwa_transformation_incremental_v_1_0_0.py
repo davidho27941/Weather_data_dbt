@@ -35,7 +35,7 @@ profile_config = ProfileConfig(
         conn_id="snowflake_dev", 
         profile_args={
             "database": "weather_data",
-            "schema": "cwb_dev"
+            "schema": "cwb_dev_v2"
         },
 ))
 
