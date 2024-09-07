@@ -4,7 +4,7 @@ on: push
 jobs:
   build_docs:
     runs-on: ubuntu-latest
-    environment: dbt_dev
+    environment: dev
     env:
       profile: ${{ secrets.dbt_profile }}
     steps:
