@@ -1,0 +1,15 @@
+version: 2
+
+sources:
+  - name: measurements
+    database: weather_data
+    schema: public
+    tables:
+      - name: WEATHER_EXT_TABLE
+        description: >
+          External Table for weather measurements. 
+          One record per weather station. Provided by the following API: https://opendata.cwa.gov.tw/api/v1/rest/datastore/O-A0003-001
+        columns:
+          - name: value
+            description: >
+              Origin JSON context.
