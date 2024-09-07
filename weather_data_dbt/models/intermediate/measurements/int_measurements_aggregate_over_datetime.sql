@@ -91,5 +91,18 @@ with measurements as (
 
     from measurements
 )
+{% if is_incremental() %}
+, old_measurements as (
+    select * from {{ this }}
+)
+{% endif %}
+
 
 select * from aggregated
+{% if is_incremental() %}
+
+where measure_at > (
+    select MAX(measure_at) from old_measurements
+)
+
+{% endif %}
