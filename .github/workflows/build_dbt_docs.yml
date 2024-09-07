@@ -1,0 +1,76 @@
+name: GitHub dbt Docs Generation
+run-name: GitHub dbt Docs Generation
+on: push
+jobs:
+  build_docs:
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      profile: ${{ secrets.dbt_profile }}
+    steps:
+      - name: "1. Checkout branch."
+        id: step-01
+        uses: actions/checkout@v3
+      
+      - name: "2. Install dbt"
+        id: step-02
+        run: pip3 install dbt-core dbt-snowflake
+      
+      - name: "test: secret to file"
+        uses: mobiledevops/secret-to-file-action@v1
+        with:
+          base64-encoded-secret: ${{ secrets.dbt_profile }}
+          filename: "profiles.yml"
+          working-directory: weather_data_dbt
+      
+      - name: "test: test if secret to file works as expect"
+        run: ls -al weather_data_dbt
+
+      - name: "3. Compile dbt"
+        id: step-03
+        working-directory: weather_data_dbt
+        run: |
+          dbt deps
+          dbt compile --profiles-dir .
+
+      - name: "4. Generate dbt docs"
+        id: step-04
+        working-directory: weather_data_dbt
+        run: |
+          dbt deps
+          dbt docs generate --profiles-dir .
+          cd target
+          mkdir ${{ github.workspace }}/docs
+          cp *.json *.html graph.gpickle ${{ github.workspace }}/docs
+          ls -ltra ${{ github.workspace }}/docs
+
+      - name: "5. Upload artifacts"
+        id: step-05
+        uses: actions/upload-pages-artifact@v2
+        with:
+          path: ${{ github.workspace }}/docs
+
+      - name: "6. Zip artifacts"
+        id: step-06
+        run: zip -jrq docs.zip ${{ github.workspace }}/docs
+
+      - name: "7. Upload artifact for deployment."
+        id: step07
+        uses: actions/upload-artifact@v3
+        with:
+          name: docs
+          path: docs.zip
+
+  deploy-gh-page:
+    needs: build_docs
+    permissions:
+      pages: write 
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Deploy to Github Pages"
+        id: deployment
+        uses: actions/deploy-pages@v2
