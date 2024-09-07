@@ -1,12 +1,12 @@
 {# 定義目標表格 #}
-{% set table_name = ref('int_measurements__aggregate_over_datetime') %}
+{% set table_name = ref('int_measurements_aggregate_over_datetime') %}
 
 {# 獲取所有欄位 #}
 {% set all_columns = adapter.get_columns_in_relation(table_name) %}
 
 
 with measurements as (
-    select * from {{ ref('int_measurements__aggregate_over_datetime') }}
+    select * from {{ ref('int_measurements_aggregate_over_datetime') }}
 ), weekly_aggregated_data as (
     SELECT
         
