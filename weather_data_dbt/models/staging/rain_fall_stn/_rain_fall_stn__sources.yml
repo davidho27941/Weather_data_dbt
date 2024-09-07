@@ -1,0 +1,15 @@
+version: 2
+
+sources:
+  - name: rain_fall_stn
+    database: weather_data
+    schema: public
+    tables:
+      - name: RAIN_FALL_STN_EXT_TABLE
+        description: >
+          External Table for rain fall station. 
+          One record per rain fall station. Provided by https://data.moa.gov.tw/api.aspx/api/v1TaiwanRainfallStationInformationType.
+        columns:
+          - name: value
+            description: >
+              Origin JSON context.
