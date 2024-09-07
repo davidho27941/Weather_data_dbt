@@ -1,0 +1,17 @@
+version: 2
+
+sources:
+  - name: weather_stn
+    database: weather_data
+    schema: public
+    tables:
+      - name: WEATHER_STN_EXT_TABLE
+        description: >
+          External Table for weather station. 
+          One record per weather station. Provided by the following API:
+            1. Manned Station: https://opendata.cwa.gov.tw/api/v1/rest/datastore/C-B0074-001
+            2. Unmanned Station: https://opendata.cwa.gov.tw/api/v1/rest/datastore/C-B0074-002
+        columns:
+          - name: value
+            description: >
+              Origin JSON context.
