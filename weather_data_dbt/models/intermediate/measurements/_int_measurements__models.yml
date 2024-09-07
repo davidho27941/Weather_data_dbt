@@ -1,0 +1,29 @@
+version: 2
+
+models:
+  - name: measurements_exisint_manned_station
+    description: >
+      Existing weather stations which is manned.
+    docs:
+        show: true
+    access: public
+    columns:
+      - name: ...TBD
+
+  - name: measurements_exisint_automatic_station
+    description: >
+      Existing weather stations which is operating automatically..
+    docs:
+        show: true
+    access: public
+    columns:
+      - name: ...TBD
+
+  - name: measurements_exisint_agriculture_station
+    description: >
+      Existing weather stations which is operate for agricultures usage and rain fall observations.
+    docs:
+        show: true
+    access: public
+    columns:
+      - name: ...TBD
