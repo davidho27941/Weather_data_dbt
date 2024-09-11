@@ -6,6 +6,8 @@ This is a side project to build an end-to-end automated data pipeline. We use we
 
 ![Overview](./images/en/project_overview_en.jpg)
 
+> For Japanese version, please refer to: [Japanese Version](./multilingual_readme/readme_jp.md)
+
 ## Requirements
 
 * `Airflow` >= `2.9.3`
