@@ -9,15 +9,17 @@
 
 ## 必要要件
 
-* Airflow >= 2.9.3
-* dbt-core == 1.8.5
-* dbt-snowflake == 1.8.3
-* astronomer-cosmos == 1.5.1
-* boto3 == 1.34.90
+* `Airflow` >= `2.9.3`
+* `dbt-core` == `1.8.5`
+* `dbt-snowflake` == `1.8.3`
+* `astronomer-cosmos` == `1.5.1`
+* `boto3` == `1.34.90`
+
 
 ### オプション
-* Docker >= 27.0.3
-* k3s == v1.30.4+k3s1
+
+* `Docker` >= `27.0.3`
+* `k3s` == `v1.30.4+k3s1`
 
 
 ## 抽出・ロードプロセス
