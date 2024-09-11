@@ -3,7 +3,7 @@ run-name: GitHub dbt Docs Generation
 on: 
   push:
     paths:
-      - weather_data_dbt
+      - weather_data_dbt/**
 
 jobs:
   build_docs:
