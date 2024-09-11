@@ -6,6 +6,19 @@ This is a side project to build an end-to-end automated data pipeline. We use we
 
 ![Overview](./images/en/project_overview_en.jpg)
 
+## Requirements
+
+* `Airflow` >= `2.9.3`
+* `dbt-core` == `1.8.5`
+* `dbt-snowflake` == `1.8.3`
+* `astronomer-cosmos` == `1.5.1`
+* `boto3` == `1.34.90`
+
+### Optional
+
+* `Docker` >= `27.0.3`
+* `k3s` == `v1.30.4+k3s1`
+
 ## Extract - Load Process
 
 The automated data pipeline in this project is built on the Self-hosted Apache Airflow and uses AWS S3 as remote storage. The DAG is scheduled with different frequencies and gets the desired from the open data platform provided by Taiwan's government. The fetched data will be uploaded to AWS S3.
