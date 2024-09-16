@@ -33,7 +33,7 @@ In the data transformation pipeline, we use S3 Storage as an external table for 
 
 ![Transformation](./images/en/transformation_en.jpg)
 
-> For detail transformation and processing information, please refer to the auto-generated dbt document: [Web Page](https://davidho27941.github.io/weather_data_dbt/#!/overview)
+> For detail transformation and processing information, please refer to the auto-generated dbt document: [Web Page](https://davidho27941.github.io/Weather_data_dbt/#!/overview)
 
 ## Future Plan
 
