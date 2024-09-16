@@ -36,7 +36,7 @@
 ![Transformation](../images/jp/transformation_jp.png)
 
 
-> 詳細な変換および処理情報については、自動生成されたdbtドキュメントをご参照ください: [Web Page](https://davidho27941.github.io/weather_data_dbt/#!/overview)
+> 詳細な変換および処理情報については、自動生成されたdbtドキュメントをご参照ください: [Web Page](https://davidho27941.github.io/Weather_data_dbt/#!/overview)
 
 ## 将来の計画
 
