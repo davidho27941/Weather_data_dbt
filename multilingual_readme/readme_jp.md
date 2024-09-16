@@ -26,14 +26,14 @@
 
 本プロジェクトにおける自動化データパイプラインは、セルフホストのApache Airflow上に構築され、リモートストレージとしてAWS S3を使用しています。DAGは異なる頻度でスケジュールされ、台湾政府が提供するオープンデータプラットフォームから必要なデータを取得します。取得したデータはAWS S3 にアップロードされます。
 
-![Extract-Load](../images/jp/extract_load_jp.jpg)
+![Extract-Load](../images/jp/extract_load_jp.png)
 
 
 ## 変換プロセス
 
 データ変換パイプラインでは、S3ストレージをSnowflakeの外部テーブルとして使用し、dbt（data build tool）を活用することで、外部テーブルのデータを変換しています。変換プロセスは、ステージング、中間、アーティファクトの3つの段階に分かれており、それぞれ異なる目的に対応しています。
 
-![Transformation](../images/jp/transformation_jp.jpg)
+![Transformation](../images/jp/transformation_jp.png)
 
 
 > 詳細な変換および処理情報については、自動生成されたdbtドキュメントをご参照ください: [Web Page](https://davidho27941.github.io/weather_data_dbt/#!/overview)
