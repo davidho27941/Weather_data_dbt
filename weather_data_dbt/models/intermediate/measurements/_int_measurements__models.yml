@@ -1,29 +1,12 @@
 version: 2
 
 models:
-  - name: measurements_exisint_manned_station
+  - name: int_measurements_aggregate_over_datetime
     description: >
-      Existing weather stations which is manned.
+      Per-row rolling aggregates (hour / day / week / month) of weather
+      measurements partitioned by station_id. Forms the base for the
+      downstream `*_aggregated_measurements` mart models.
     docs:
-        show: true
+      show: true
     access: public
-    columns:
-      - name: ...TBD
-
-  - name: measurements_exisint_automatic_station
-    description: >
-      Existing weather stations which is operating automatically..
-    docs:
-        show: true
-    access: public
-    columns:
-      - name: ...TBD
-
-  - name: measurements_exisint_agriculture_station
-    description: >
-      Existing weather stations which is operate for agricultures usage and rain fall observations.
-    docs:
-        show: true
-    access: public
-    columns:
-      - name: ...TBD
+    columns: []

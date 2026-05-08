@@ -2,7 +2,7 @@ with source AS (
     SELECT * FROM {{ source('rain_fall_stn', 'RAIN_FALL_STN_EXT_TABLE') }}
 ),
 
-ranamed AS (
+renamed AS (
     SELECT 
         -- id
         nested_json.value:Station_ID::varchar as station_id,
@@ -19,4 +19,4 @@ ranamed AS (
         lateral flatten(input => VALUE:Data) AS nested_json
 )
 
-SELECT * FROM ranamed
+SELECT * FROM renamed
