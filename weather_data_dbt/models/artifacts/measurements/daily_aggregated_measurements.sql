@@ -71,7 +71,7 @@ with measurements as (
 
             {%- elif col.name.endswith('DAILY_MAX') -%}
 
-                {{ col.name }} as {{ col.name | replace("_DAILY_MAX", "MAX") }} ,
+                {{ col.name }} as {{ col.name | replace("_DAILY_MAX", "_MAX") }} ,
 
             {%- endif -%}
 

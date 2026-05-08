@@ -2,7 +2,7 @@
 # Name your project! Project names should contain only lowercase characters
 # and underscores. A good package name should reflect your organization's
 # name or the intended use of these models
-name: 'my_new_project'
+name: 'weather_data_dbt'
 version: '1.0.0'
 config-version: 2
 
@@ -36,8 +36,7 @@ clean-targets:         # directories to be removed by `dbt clean`
 # using the `{{ config(...) }}` macro.
 
 models:
-  my_new_project:
-    # Applies to all files under models/example/
+  weather_data_dbt:
     staging:
       +schema: staging
       +materialized: view
@@ -45,7 +44,14 @@ models:
       +schema: intermediate
       +materialized: table
       measurements:
-          +materialized: incremental
+        +materialized: incremental
+        +incremental_strategy: merge
+        +unique_key: ['station_id', 'measure_at']
     artifacts:
-      schema: artifacts
-      +materialized: incremental
+      +schema: artifacts
+      measurements:
+        +materialized: incremental
+        +incremental_strategy: merge
+        +unique_key: ['station_id', 'measure_at']
+      stations:
+        +materialized: table

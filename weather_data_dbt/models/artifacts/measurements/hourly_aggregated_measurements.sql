@@ -71,7 +71,7 @@ with measurements as (
 
             {%- elif col.name.endswith('HOURLY_MAX') -%}
 
-                {{ col.name }} as {{ col.name | replace("_HOURLY_MAX", "MAX") }} ,
+                {{ col.name }} as {{ col.name | replace("_HOURLY_MAX", "_MAX") }} ,
 
             {%- endif -%}
 

@@ -71,7 +71,7 @@ with measurements as (
 
             {%- elif col.name.endswith('MONTHLY_MAX') -%}
 
-                {{ col.name }} as {{ col.name | replace("_MONTHLY_MAX", "MAX") }} ,
+                {{ col.name }} as {{ col.name | replace("_MONTHLY_MAX", "_MAX") }} ,
 
             {%- endif -%}
 

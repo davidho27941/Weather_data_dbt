@@ -22,7 +22,7 @@ with
             ) as station_name,
             weather_station.station_name_en,
             coalesce(
-                rain_fall_station.city_name, weather_station.country_name
+                rain_fall_station.city_name, weather_station.county_name
             ) as city_name,
             rain_fall_station.town_name as town_name,
             weather_station.location as location,
@@ -56,8 +56,8 @@ with
             joined_rain_fall_weather_station.new_station_id,
             coalesce(
                 joined_rain_fall_weather_station.city_code,
-                geo_coordinates_tw97.country_code
-            ) as country_code,
+                geo_coordinates_tw97.county_code
+            ) as county_code,
             coalesce(
                 joined_rain_fall_weather_station.town_code,
                 geo_coordinates_tw97.town_code
@@ -69,8 +69,8 @@ with
             joined_rain_fall_weather_station.station_name_en,
             coalesce(
                 joined_rain_fall_weather_station.city_name,
-                geo_coordinates_tw97.country_name
-            ) as country_name,
+                geo_coordinates_tw97.county_name
+            ) as county_name,
             coalesce(
                 joined_rain_fall_weather_station.town_name,
                 geo_coordinates_tw97.town_name

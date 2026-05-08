@@ -1,4 +1,4 @@
-{%- set has_no_negative = ['air_temperature', 'air_pressure', 'relative_humidity', 'wind_speed', 'wind_direction', 'wind_direction_gust', 'peak_gust_speed', 'precipitation', 'sunshine_duration_10Min', 'uv_index'] -%}
+{%- set numeric_columns = ['air_temperature', 'air_pressure', 'relative_humidity', 'wind_speed', 'wind_direction', 'wind_direction_gust', 'peak_gust_speed', 'precipitation', 'sunshine_duration_10Min', 'uv_index'] -%}
 {%- set has_null = ['visibility', 'weather_status']-%}
 
 with source as (
@@ -49,10 +49,10 @@ null_negative_processed AS (
         station_id,
 
         -- numerics
-        {% for numerics_column in has_no_negative -%}
-            
-            {{ negative_to_null( numerics_column ) }} AS {{ numerics_column }},
-            
+        {% for numerics_column in numeric_columns -%}
+
+            {{ cwa_sentinel_to_null( numerics_column ) }} AS {{ numerics_column }},
+
         {%- endfor%}
         
         -- strings
