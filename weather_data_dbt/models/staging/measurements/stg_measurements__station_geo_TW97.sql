@@ -13,8 +13,8 @@ renamed AS (
         nested_json_layer2.value:GeoInfo:StationAltitude::float AS station_altitude,
 
         -- strings
-        nested_json_layer2.value:GeoInfo:CountyName::varchar AS country_name,
-        nested_json_layer2.value:GeoInfo:CountyCode::varchar AS country_code,
+        nested_json_layer2.value:GeoInfo:CountyName::varchar AS county_name,
+        nested_json_layer2.value:GeoInfo:CountyCode::varchar AS county_code,
         nested_json_layer2.value:GeoInfo:TownName::varchar AS town_name,
         nested_json_layer2.value:GeoInfo:TownCode::varchar AS town_code,
         nested_json_layer2.value:GeoInfo:Coordinates[0]:CoordinateFormat::varchar AS coordinate_format,

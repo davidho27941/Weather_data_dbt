@@ -23,7 +23,7 @@ renamed as (
         nested_json.value:status::varchar as station_status,
         nested_json.value:StationName::varchar as station_name,
         nested_json.value:StationNameEN::varchar as station_name_en,
-        nested_json.value:CountyName::varchar as country_name,
+        nested_json.value:CountyName::varchar as county_name,
         nested_json.value:Location::varchar as location,
         (
             CASE 
