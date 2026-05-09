@@ -32,6 +32,11 @@ dispatch:
 # measurements_lookback_days: how far back the daily incremental MERGE
 # re-scans, to absorb late-arriving data. Bump for backfills.
 #
+# ci_sample_days: when > 0, stg_observations restricts the bronze read to
+# the most recent N days. Used by GitHub Actions CI (target=ci) to keep
+# build cost under a minute on a few hundred thousand rows. Default 0
+# means no filter (full bronze, used by dev / stg / prod).
+#
 # Note: bronze location is NOT a var. It is read directly via env_var() in
 # models/staging/_sources.yml — dbt does not recursively render Jinja
 # stored in `vars:`, so an env_var indirection at this level would surface
@@ -40,6 +45,7 @@ dispatch:
 # ---------------------------------------------------------------------------
 vars:
   measurements_lookback_days: 5
+  ci_sample_days: 0
 
 # ---------------------------------------------------------------------------
 # Model configurations

@@ -67,6 +67,11 @@
 
 with bronze as (
     select * from {{ source('weather_raw', 'observations') }}
+    {%- if var('ci_sample_days', 0) | int > 0 %}
+    -- CI subsample: keep build under a minute on the most recent N days of bronze.
+    -- Set via --vars '{ci_sample_days: 7}' from the GHA workflow; default 0 = full.
+    where measure_at >= timestamp_sub(current_timestamp(), interval {{ var('ci_sample_days') | int }} day)
+    {%- endif %}
 )
 
 select

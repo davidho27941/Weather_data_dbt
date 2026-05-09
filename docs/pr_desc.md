@@ -6,7 +6,9 @@ Rewrites the dbt project for BigQuery against the bronze layer landed in
 PR #2. Introduces a three-environment topology (dev / stg / prod) with
 dataset-level isolation, time-grain ML rollup marts, and the shell
 infrastructure for Cloud Run Jobs that drive `dbt build` and
-`dbt source freshness`.
+`dbt source freshness`. Also folds in the GitHub Actions CI/CD that
+validates dbt PRs and rolls the Cloud Run Job image on every merge to
+`main`.
 
 The Snowflake-syntax models that survived through PR #1 are fully replaced.
 There is no Snowflake compatibility shim — Snowflake was already disabled.
@@ -177,6 +179,28 @@ post-hoc, conflating two separate concerns).
 | [`deploy_jobs.sh`](infra/dbt/deploy_jobs.sh) | gcloud run jobs deploy for `dbt-daily-build` + `dbt-hourly-freshness` |
 | [`README.md`](infra/dbt/README.md) | Operator runbook + Cloud Scheduler setup commands |
 
+### CI/CD: `.github/workflows/`
+
+| File | Trigger | Purpose |
+|---|---|---|
+| [`dbt_ci.yml`](.github/workflows/dbt_ci.yml) | PRs touching `weather_data_dbt/**` or `infra/dbt/**` | `dbt deps` + `dbt parse` + `dbt build --target ci --full-refresh --vars '{ci_sample_days: 7}'` against an isolated `weather_ci_*` dataset; runs all data tests as part of `build` |
+| [`dbt_cd.yml`](.github/workflows/dbt_cd.yml) | Push to `main` touching `weather_data_dbt/**` or `infra/dbt/**` | Build + push the dbt-weather image to Artifact Registry under `${SHA}` and `latest` tags, then `gcloud run jobs update` to roll both Cloud Run Jobs onto the new image |
+| [`build_dbt_docs.yml`](.github/workflows/build_dbt_docs.yml) | Push to `main` touching `weather_data_dbt/**` | Replaces the Snowflake-era docs workflow. `dbt docs generate --target ci` + publish to GitHub Pages |
+| [`README.md`](.github/workflows/README.md) | — | One-time GCP setup (CI / CD service accounts, Artifact Registry repo, GitHub secrets/variables) and migration path to Workload Identity Federation |
+
+A `ci` target is added to [`profiles.example.yml`](weather_data_dbt/profiles/profiles.example.yml)
+and a `ci_sample_days` var to [`dbt_project.yml`](weather_data_dbt/dbt_project.yml).
+When the var is non-zero, `stg_observations` filters bronze to the last
+N days; this keeps each CI run under a minute on ~half a million rows
+instead of full bronze (~25M). The fallback branch of
+`generate_schema_name` routes the `ci` target to `weather_ci_*` datasets.
+
+CI/CD authenticates to GCP via two service-account JSON keys
+(`GCP_SA_KEY_CI`, `GCP_SA_KEY_CD`) stored as repo secrets. Workload
+Identity Federation is the documented migration target — workflows
+already request `id-token: write` so swapping in WIF is a two-line
+change per workflow.
+
 ## Test plan
 
 Bronze re-build (one-time, required because measurement fields change
@@ -213,21 +237,46 @@ dbt local validation:
       should return rows.
 - [ ] `dbt test --target dev` — every test passes.
 
-Container build:
+Container build (manual):
 
 - [ ] `infra/dbt/build_and_push.sh` builds and pushes the image.
 - [ ] `gcloud run jobs execute dbt-daily-build --region=asia-east1`
   reproduces a successful build against stg.
 
+CI/CD (one-time setup per `.github/workflows/README.md`, then per-event):
+
+- [ ] Create `gha-ci@…` and `gha-cd@…` service accounts and grant the
+  scoped roles documented in the runbook.
+- [ ] Add `GCP_SA_KEY_CI` and `GCP_SA_KEY_CD` to repo secrets.
+- [ ] Enable GitHub Pages → Source = "GitHub Actions".
+- [ ] Open a throwaway PR touching `weather_data_dbt/**` and confirm
+  `dbt CI` runs `parse` + `build --target ci` + tests green.
+- [ ] Merge to `main` and confirm `dbt CD` pushes a fresh image and
+  rolls both Cloud Run Jobs (`gcloud run jobs describe dbt-daily-build
+  --region=asia-east1` shows the new digest).
+- [ ] Confirm `dbt docs` workflow publishes to Pages.
+
 ## What is NOT in this PR
 
 Deferred to PR #4 (or later):
 
-- **Terraform** for SA / IAM / Artifact Registry / Cloud Scheduler. Shell
-  scripts and runbook are the only deployment surface for now.
+- **Terraform** for SA / IAM / Artifact Registry / Cloud Run Jobs / Cloud
+  Scheduler (§13.6 of the design doc). Shell scripts and the GHA runbook
+  are the only deployment surface for now. Future Terraform will use a
+  GCS backend; the current SA / IAM artifacts created by the runbook are
+  importable.
+- **Cloud Scheduler triggers** for the two Cloud Run Jobs. Documented in
+  [`infra/dbt/README.md`](infra/dbt/README.md) as gcloud commands; not
+  scripted because the schedule cadence may change once we have stg
+  telemetry.
 - **BigQuery Scheduled Query** setup for `infra/bq/daily_load.sql`. That
   needs Console-based config and is independent of dbt orchestration.
-- **Failure alerting** (Slack / Discord webhooks for Cloud Run Job failures).
+- **Failure alerting** (Slack / Discord webhooks for Cloud Run Job failures,
+  freshness wrapper from §13.4.2, Cloud Monitoring alert policies from
+  §13.9 P0).
+- **Workload Identity Federation** for GitHub Actions. Workflows are wired
+  for SA-key auth in this PR; WIF migration path documented in
+  [`.github/workflows/README.md`](.github/workflows/README.md).
 - **Bringing main's `infra/bq/`** scripts up to date with the schema-driven
   refactor (PR #2 was merged in an earlier state). Belongs in a small
   follow-up PR — does not block dbt work because the live bronze tables

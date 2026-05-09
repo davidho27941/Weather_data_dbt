@@ -11,6 +11,10 @@
 #   - dev:  individual developer's local runs. Outputs land in
 #           `weather_dev_staging` / `weather_dev_intermediate` / `weather_dev_marts`
 #           datasets (via the custom generate_schema_name macro).
+#   - ci:   GitHub Actions PR validation. Outputs in `weather_ci_staging` /
+#           `weather_ci_intermediate` / `weather_ci_marts`. Auth via
+#           GOOGLE_APPLICATION_CREDENTIALS (set by google-github-actions/auth).
+#           Always paired with --vars 'ci_sample_days: N' to keep cost low.
 #   - stg:  pre-production / scheduled daily build. Outputs in
 #           `weather_staging` / `weather_intermediate` / `weather_marts`.
 #   - prod: production. Same dataset names as stg but in a separate GCP project,
@@ -34,6 +38,22 @@ weather_data_dbt:
       priority: interactive
       job_retries: 1
       job_execution_timeout_seconds: 600
+
+    # ----- CI (GitHub Actions PR validation) ------------------------------
+    # method: oauth picks up Application Default Credentials, which the
+    # google-github-actions/auth step writes to GOOGLE_APPLICATION_CREDENTIALS.
+    # Output datasets are weather_ci_* (per the generate_schema_name macro's
+    # fallback branch for non-dev/stg/prod target names).
+    ci:
+      type: bigquery
+      method: oauth
+      project: "{{ env_var('DBT_CI_PROJECT', 'side-project-staging') }}"
+      dataset: "{{ env_var('DBT_CI_DATASET', 'weather') }}"
+      location: "{{ env_var('BQ_LOCATION', 'asia-east1') }}"
+      threads: 4
+      priority: interactive
+      job_retries: 1
+      job_execution_timeout_seconds: 900
 
     # ----- Staging (automated daily build, current source of truth) -------
     stg:

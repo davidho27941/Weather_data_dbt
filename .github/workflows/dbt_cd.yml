@@ -1,0 +1,129 @@
+name: dbt CD
+
+# On every push to main that touches the dbt project, the dbt-bigquery
+# image, or this workflow:
+#   1. Build the dbt-weather Docker image (infra/dbt/Dockerfile).
+#   2. Push to Artifact Registry under two tags:
+#        ${REGION}-docker.pkg.dev/${PROJECT}/dbt/dbt-weather:${SHA}
+#        ${REGION}-docker.pkg.dev/${PROJECT}/dbt/dbt-weather:latest
+#   3. Roll the two Cloud Run Jobs (dbt-daily-build, dbt-hourly-freshness)
+#      onto the new image with `gcloud run jobs update`.
+#
+# The Cloud Run Job definitions themselves (CPU / memory / timeout / args /
+# service account) live in infra/dbt/deploy_jobs.sh and are NOT redeployed
+# here — only the image tag rolls forward. Re-run deploy_jobs.sh from a
+# workstation when those settings change.
+#
+# Required secrets (repo or environment):
+#   GCP_SA_KEY_CD     SA key JSON. SA needs:
+#                       - roles/artifactregistry.writer        (repo `dbt`)
+#                       - roles/run.developer                  (project, scoped to the two jobs)
+#                       - roles/iam.serviceAccountUser         on dbt-runner@... (act-as)
+#
+# Required vars (repo or environment, with defaults):
+#   GCP_PROJECT_ID    side-project-staging
+#   BQ_LOCATION       asia-east1
+#   AR_REPO           dbt
+#   DBT_RUNNER_SA     dbt-runner@side-project-staging.iam.gserviceaccount.com
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'weather_data_dbt/**'
+      - 'infra/dbt/**'
+      - '.github/workflows/dbt_cd.yml'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to build/push/roll (defaults to git SHA)'
+        required: false
+        default: ''
+
+concurrency:
+  group: dbt-cd-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # reserved for future WIF migration
+
+env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'side-project-staging' }}
+  BQ_LOCATION: ${{ vars.BQ_LOCATION || 'asia-east1' }}
+  AR_REPO: ${{ vars.AR_REPO || 'dbt' }}
+  DBT_RUNNER_SA: ${{ vars.DBT_RUNNER_SA || 'dbt-runner@side-project-staging.iam.gserviceaccount.com' }}
+
+jobs:
+  build_push_roll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve image tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY_CD }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${BQ_LOCATION}-docker.pkg.dev" --quiet
+
+      - name: Build image
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          IMAGE="${BQ_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/dbt-weather"
+          docker build \
+            -t "${IMAGE}:${TAG}" \
+            -t "${IMAGE}:latest" \
+            -f infra/dbt/Dockerfile \
+            .
+
+      - name: Push image (sha + latest)
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          IMAGE="${BQ_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/dbt-weather"
+          docker push "${IMAGE}:${TAG}"
+          docker push "${IMAGE}:latest"
+
+      - name: Roll Cloud Run Jobs onto new image
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          IMAGE="${BQ_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/dbt-weather:${TAG}"
+          for JOB in dbt-daily-build dbt-hourly-freshness; do
+            echo "==> updating ${JOB} → ${IMAGE}"
+            gcloud run jobs update "${JOB}" \
+              --project="${GCP_PROJECT_ID}" \
+              --region="${BQ_LOCATION}" \
+              --image="${IMAGE}"
+          done
+
+      - name: Summary
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          {
+            echo "## dbt CD"
+            echo
+            echo "- image tag: \`${TAG}\`"
+            echo "- pushed to: \`${BQ_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/dbt-weather\`"
+            echo "- updated jobs: \`dbt-daily-build\`, \`dbt-hourly-freshness\`"
+          } >> "$GITHUB_STEP_SUMMARY"
