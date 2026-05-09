@@ -1,0 +1,208 @@
+version: 2
+
+models:
+  # --------------- dimensions ---------------
+  - name: dim_stations
+    description: |
+      Station dimension for ML feature joins. Combines CWA weather stations
+      and agricultural rain-fall stations into a single dimension. CWA wins
+      on station_id collision.
+    columns:
+      - name: station_id
+        description: CWA or rain-fall station ID (alphanumeric).
+        tests: [not_null, unique]
+      - name: station_type
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['有人站', '自動站', '農業雨量站']
+      - name: station_source
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['cwa', 'rain_fall']
+
+  # --------------- 10-minute fact ---------------
+  - name: fct_measurements_10min
+    description: |
+      Original 10-minute granularity weather observations for ML training,
+      joined with dim_stations for context.
+
+      Each measurement carries TWO columns:
+        <field>_raw  STRING    original CWA value (preserves sentinels)
+        <field>      FLOAT64   sentinel-translated, ready for ML
+
+      For numeric fields:
+        '-99' / '-999' / 'X'    → NULL
+        wind_direction*: also '990' (calm wind)             → NULL
+        precipitation:   '-98' (no rain 6h) / 'T' (trace)   → 0
+
+      `has_*_sensor` flags distinguish "field not measured at this station"
+      (NULL because the station does not have that sensor) from
+      "measurement missing" (NULL because the snapshot was bad).
+
+      See stg_observations docs for full sentinel-rule catalogue.
+    columns:
+      - name: station_id
+        description: CWA station ID.
+        tests: [not_null]
+      - name: measure_at
+        description: Observation timestamp (UTC).
+        tests: [not_null]
+      - name: station_type
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['有人站', '自動站', '農業雨量站']
+      - name: has_pressure_sensor
+        description: Station carries a pressure sensor (only manned stations).
+      - name: has_sunshine_sensor
+        description: Station carries a sunshine sensor (only manned stations).
+      - name: has_uv_sensor
+        description: Station carries a UV sensor (only manned stations).
+
+      # raw + cleaned pairs
+      - name: air_temperature_raw
+        description: Original CWA value (STRING). Sentinels 'X' / '-99'.
+      - name: air_temperature
+        description: Cleaned air temperature in °C (FLOAT64).
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: -30
+                max_value: 50
+                inclusive: true
+              config:
+                where: air_temperature is not null
+      - name: air_pressure_raw
+        description: Original CWA value (STRING).
+      - name: air_pressure
+        description: Cleaned station pressure in hPa.
+      - name: relative_humidity_raw
+        description: Original CWA value (STRING).
+      - name: relative_humidity
+        description: Cleaned relative humidity in %.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+                inclusive: true
+              config:
+                where: relative_humidity is not null
+      - name: wind_speed_raw
+        description: Original CWA value (STRING).
+      - name: wind_speed
+        description: Cleaned mean wind speed in m/s.
+      - name: wind_direction_raw
+        description: Original CWA value (STRING). Sentinels 'X' / '-99' / '990' (calm wind).
+      - name: wind_direction
+        description: Cleaned mean wind direction in degrees. NULL if sentinel including '990'.
+      - name: wind_direction_gust_raw
+        description: Original CWA value (STRING).
+      - name: wind_direction_gust
+        description: Cleaned wind direction at peak gust.
+      - name: peak_gust_speed_raw
+        description: Original CWA value (STRING).
+      - name: peak_gust_speed
+        description: Cleaned peak gust speed in m/s.
+      - name: precipitation_raw
+        description: |
+          Original CWA value (STRING). Sentinels 'X' / 'T' (trace) / '-99' /
+          '-98' (no rain past 6h).
+      - name: precipitation
+        description: Cleaned precipitation in mm. 'T' and '-98' translated to 0.
+      - name: sunshine_duration_10min_raw
+        description: Original CWA value (STRING). Only manned stations.
+      - name: sunshine_duration_10min
+        description: Cleaned sunshine duration in hours.
+      - name: uv_index_raw
+        description: Original CWA value (STRING). Only manned stations.
+      - name: uv_index
+        description: Cleaned UV index.
+      - name: weather_status_raw
+        description: Original weather phenomenon (STRING).
+      - name: weather_status
+        description: Cleaned weather phenomenon. NULL if raw was '-99' or 'X'.
+      - name: visibility_raw
+        description: Original visibility category (STRING).
+      - name: visibility
+        description: Cleaned visibility category.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [station_id, measure_at]
+
+  # --------------- time-grain rollups ---------------
+  - name: fct_measurements_hourly
+    description: |
+      Hourly rollup. One row per (station_id, hour). Bucket boundary in UTC.
+      Per-column observation counts let consumers detect partial buckets
+      (a full hour should have 6 observations at 10-minute cadence).
+    columns:
+      - name: station_id
+        tests: [not_null]
+      - name: measure_at
+        tests: [not_null]
+      - name: observation_count
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                max_value: 6
+                inclusive: true
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [station_id, measure_at]
+
+  - name: fct_measurements_daily
+    description: |
+      Daily rollup. One row per (station_id, day). Day boundary in
+      Asia/Taipei. A full day has 144 observations (24 * 6).
+    columns:
+      - name: station_id
+        tests: [not_null]
+      - name: measure_at
+        tests: [not_null]
+      - name: observation_count
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                max_value: 144
+                inclusive: true
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [station_id, measure_at]
+
+  - name: fct_measurements_weekly
+    description: |
+      Weekly rollup. One row per (station_id, week-starting-Monday).
+      Week boundary in Asia/Taipei. A full week has 1008 observations.
+    columns:
+      - name: station_id
+        tests: [not_null]
+      - name: measure_at
+        tests: [not_null]
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [station_id, measure_at]
+
+  - name: fct_measurements_monthly
+    description: |
+      Monthly rollup. One row per (station_id, month-start). Month
+      boundary in Asia/Taipei.
+    columns:
+      - name: station_id
+        tests: [not_null]
+      - name: measure_at
+        tests: [not_null]
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [station_id, measure_at]

@@ -1,0 +1,37 @@
+version: 2
+
+models:
+  - name: int_measurements__cleaned
+    description: |
+      Sentinel-cleaned weather observations at 10-minute grain. Same row
+      cardinality as stg_observations but deduplicated and incrementally
+      materialized for downstream marts.
+    columns:
+      - name: station_id
+        tests: [not_null]
+      - name: measure_at
+        tests: [not_null]
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [station_id, measure_at]
+
+  - name: int_stations__unioned
+    description: |
+      Union of CWA weather stations and agricultural rain-fall stations,
+      with origin tracking. One row per station_id (CWA wins on collision).
+      Feeds dim_stations.
+    columns:
+      - name: station_id
+        tests: [not_null, unique]
+      - name: station_source
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['cwa', 'rain_fall']
+      - name: station_type
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['有人站', '自動站', '農業雨量站']
