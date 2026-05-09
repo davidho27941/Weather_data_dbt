@@ -1,0 +1,17 @@
+# Don't ship build artifacts or local profile into the image.
+weather_data_dbt/target/
+weather_data_dbt/dbt_packages/
+weather_data_dbt/logs/
+weather_data_dbt/profiles/profiles.yml
+weather_data_dbt/.user.yml
+
+# Repo-level noise we don't need at runtime.
+.git/
+.github/
+docs/
+infra/bq/
+weather-crawler/
+**/__pycache__/
+**/.DS_Store
+**/.venv/
+README.md
