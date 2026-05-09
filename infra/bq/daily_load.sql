@@ -27,7 +27,7 @@
 -- top of the script if your environment differs.
 -- ============================================================================
 
-DECLARE project_id STRING DEFAULT 'side-project-weather';
+DECLARE project_id STRING DEFAULT 'side-project-staging';
 DECLARE dataset    STRING DEFAULT 'weather_raw';
 DECLARE bucket     STRING DEFAULT 'side-project-weather-data';
 
@@ -60,27 +60,35 @@ EXECUTE IMMEDIATE FORMAT("""
       station.StationId    AS station_id,
       station.StationName  AS station_name,
 
-      station.WeatherElement.AirTemperature                      AS air_temperature,
-      station.WeatherElement.AirPressure                         AS air_pressure,
-      station.WeatherElement.RelativeHumidity                    AS relative_humidity,
-      station.WeatherElement.WindSpeed                           AS wind_speed,
-      station.WeatherElement.WindDirection                       AS wind_direction,
-      station.WeatherElement.GustInfo.PeakGustSpeed              AS peak_gust_speed,
-      station.WeatherElement.GustInfo.Occurred_at.WindDirection  AS wind_direction_gust,
-      station.WeatherElement.Now.Precipitation                   AS precipitation,
-      station.WeatherElement.SunshineDuration                    AS sunshine_duration_10min,
-      station.WeatherElement.UVIndex                             AS uv_index,
+      -- Measurement fields are STRING in the bronze observations target
+      -- (per infra/bq/schemas/observations.json — preserves CWA sentinels
+      -- 'X' / 'T' / '-99' / '-98' / '990'). The daily staging is loaded
+      -- with autodetect, so its types depend on whichever values appeared
+      -- that day. CAST AS STRING normalizes to match the target columns,
+      -- so MERGE INSERT does not type-mismatch.
+      CAST(station.WeatherElement.AirTemperature                      AS STRING) AS air_temperature,
+      CAST(station.WeatherElement.AirPressure                         AS STRING) AS air_pressure,
+      CAST(station.WeatherElement.RelativeHumidity                    AS STRING) AS relative_humidity,
+      CAST(station.WeatherElement.WindSpeed                           AS STRING) AS wind_speed,
+      CAST(station.WeatherElement.WindDirection                       AS STRING) AS wind_direction,
+      CAST(station.WeatherElement.GustInfo.PeakGustSpeed              AS STRING) AS peak_gust_speed,
+      CAST(station.WeatherElement.GustInfo.Occurred_at.WindDirection  AS STRING) AS wind_direction_gust,
+      CAST(station.WeatherElement.Now.Precipitation                   AS STRING) AS precipitation,
+      CAST(station.WeatherElement.SunshineDuration                    AS STRING) AS sunshine_duration_10min,
+      CAST(station.WeatherElement.UVIndex                             AS STRING) AS uv_index,
 
       station.WeatherElement.Weather                             AS weather_status,
       station.WeatherElement.VisibilityDescription               AS visibility,
 
       station.GeoInfo.CountyName                                 AS county_name,
-      station.GeoInfo.CountyCode                                 AS county_code,
+      CAST(station.GeoInfo.CountyCode                            AS STRING) AS county_code,
       station.GeoInfo.TownName                                   AS town_name,
-      station.GeoInfo.TownCode                                   AS town_code,
+      CAST(station.GeoInfo.TownCode                              AS STRING) AS town_code,
       station.GeoInfo.StationAltitude                            AS station_altitude,
 
-      TIMESTAMP(station.ObsTime.DateTime, 'Asia/Taipei')         AS measure_at,
+      -- ObsTime.DateTime in source is ISO-8601 with offset; BQ autodetect
+      -- promotes it to TIMESTAMP. Use directly.
+      station.ObsTime.DateTime                                   AS measure_at,
       DATE(station.ObsTime.DateTime, 'Asia/Taipei')              AS measure_date,
       PARSE_TIMESTAMP('%%Y-%%m-%%d_%%H_%%M', ingested_at)        AS ingest_at,
       'new'                                                      AS ingest_source,

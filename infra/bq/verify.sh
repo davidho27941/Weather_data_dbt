@@ -13,7 +13,7 @@
 #
 set -euo pipefail
 
-PROJECT="${GCP_PROJECT_ID:-side-project-weather}"
+PROJECT="${GCP_PROJECT_ID:-side-project-staging}"
 DATASET="${BQ_DATASET:-weather_raw}"
 
 run_check() {
@@ -48,7 +48,7 @@ FROM \`${PROJECT}.${DATASET}.observations\`;
 run_check "observations: split by ingest_source" "
 SELECT
   ingest_source,
-  COUNT(*)                              AS rows,
+  COUNT(*)                              AS row_count,
   COUNT(DISTINCT station_id)            AS unique_stations,
   MIN(measure_at)                       AS earliest,
   MAX(measure_at)                       AS latest
@@ -57,20 +57,25 @@ GROUP BY ingest_source
 ORDER BY ingest_source;
 "
 
-# 2. Sentinel distribution — sentinels (-99 / -999) should appear at non-zero
-#    counts for at least precipitation and uv_index. Complete absence likely
-#    means autodetect mis-typed something.
-run_check "observations: sentinel distribution per numeric column" "
+# 2. Sentinel distribution — measurement columns are STRING in bronze, so
+#    sentinels are matched as strings. Per CWA spec V1.05:
+#      'X' / '-99' / '-999'  → instrument-fail / missing (all numeric)
+#      '990'                 → calm wind, undefined direction (wind_direction*)
+#      'T' / '-98'           → trace / no-rain-6h (precipitation only)
+#    Expect non-zero counts on air_pressure, sunshine_duration, uv_index for
+#    automatic stations (no sensor) and on wind_direction for calm conditions.
+run_check "observations: sentinel distribution per measurement column" "
 SELECT
-  COUNTIF(air_temperature       IN (-99, -999)) AS sentinel_air_temperature,
-  COUNTIF(air_pressure          IN (-99, -999)) AS sentinel_air_pressure,
-  COUNTIF(relative_humidity     IN (-99, -999)) AS sentinel_relative_humidity,
-  COUNTIF(wind_speed            IN (-99, -999)) AS sentinel_wind_speed,
-  COUNTIF(wind_direction        IN (-99, -999)) AS sentinel_wind_direction,
-  COUNTIF(peak_gust_speed       IN (-99, -999)) AS sentinel_peak_gust_speed,
-  COUNTIF(precipitation         IN (-99, -999)) AS sentinel_precipitation,
-  COUNTIF(sunshine_duration_10min IN (-99, -999)) AS sentinel_sunshine_10min,
-  COUNTIF(uv_index              IN (-99, -999)) AS sentinel_uv_index
+  COUNTIF(air_temperature         IN ('-99', '-999', 'X'))               AS sentinel_air_temperature,
+  COUNTIF(air_pressure            IN ('-99', '-999', 'X'))               AS sentinel_air_pressure,
+  COUNTIF(relative_humidity       IN ('-99', '-999', 'X'))               AS sentinel_relative_humidity,
+  COUNTIF(wind_speed              IN ('-99', '-999', 'X'))               AS sentinel_wind_speed,
+  COUNTIF(wind_direction          IN ('-99', '-999', 'X', '990'))        AS sentinel_wind_direction,
+  COUNTIF(wind_direction_gust     IN ('-99', '-999', 'X', '990'))        AS sentinel_wind_direction_gust,
+  COUNTIF(peak_gust_speed         IN ('-99', '-999', 'X'))               AS sentinel_peak_gust_speed,
+  COUNTIF(precipitation           IN ('-99', '-999', 'X', 'T', '-98'))   AS sentinel_precipitation,
+  COUNTIF(sunshine_duration_10min IN ('-99', '-999', 'X'))               AS sentinel_sunshine_10min,
+  COUNTIF(uv_index                IN ('-99', '-999', 'X'))               AS sentinel_uv_index
 FROM \`${PROJECT}.${DATASET}.observations\`;
 "
 
@@ -79,7 +84,7 @@ FROM \`${PROJECT}.${DATASET}.observations\`;
 run_check "observations: rows per day, last 14 days" "
 SELECT
   measure_date,
-  COUNT(*) AS rows
+  COUNT(*) AS row_count
 FROM \`${PROJECT}.${DATASET}.observations\`
 WHERE measure_date >= DATE_SUB(CURRENT_DATE('Asia/Taipei'), INTERVAL 14 DAY)
 GROUP BY measure_date
