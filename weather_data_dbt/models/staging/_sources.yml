@@ -1,0 +1,70 @@
+version: 2
+
+sources:
+  - name: weather_raw
+    # env_var is evaluated at YAML parse time. We do NOT route this through
+    # a project-level var because dbt stores vars as literal strings and
+    # does not recursively render Jinja inside them.
+    database: "{{ env_var('BRONZE_PROJECT', 'side-project-staging') }}"
+    schema: weather_raw
+    description: |
+      Bronze layer for weather observations and station metadata, populated by
+      the bulk load + daily ingest scripts under infra/bq/. dbt staging reads
+      directly from these tables; the JSON flattening already happened at
+      bronze build time.
+
+    tables:
+      - name: observations
+        description: |
+          One row per (station_id, measure_at). Sentinel values (-99 / -999)
+          are preserved verbatim — the staging layer translates them to NULL.
+          Station classification (`station_type`) is precomputed at bronze
+          build time. Sources include both new-crawler data and the legacy
+          s3-bucket backfill, distinguished by `ingest_source`.
+        config:
+          loaded_at_field: ingest_at
+          freshness:
+            warn_after:  { count: 30, period: minute }
+            error_after: { count: 90, period: minute }
+        columns:
+          - name: station_id
+            description: CWA station ID (alphanumeric, e.g. '466920' or 'C0R860').
+          - name: station_name
+            description: Station name in zh-TW.
+          - name: station_type
+            description: 有人站 / 自動站 / 農業雨量站
+          - name: measure_at
+            description: Observation timestamp in UTC (BQ TIMESTAMP).
+          - name: measure_date
+            description: Observation date in Asia/Taipei (BQ DATE).
+          - name: ingest_at
+            description: Crawler ingest timestamp; NULL for legacy rows.
+          - name: ingest_source
+            description: "'new' or 'legacy'."
+
+      - name: weather_stations
+        description: |
+          Latest snapshot per CWA weather station (manned + unmanned merged).
+          One row per station_id. `ingest_source` indicates which CWA endpoint
+          the snapshot came from.
+        config:
+          loaded_at_field: ingest_at
+          freshness:
+            warn_after:  { count: 36, period: hour }
+            error_after: { count: 72, period: hour }
+        columns:
+          - name: station_id
+          - name: ingest_source
+            description: "'manned' or 'unmanned'."
+
+      - name: rain_fall_stations
+        description: |
+          Latest snapshot per agricultural rain-fall station. One row per
+          station_id.
+        config:
+          loaded_at_field: ingest_at
+          freshness:
+            warn_after:  { count: 36, period: hour }
+            error_after: { count: 72, period: hour }
+        columns:
+          - name: station_id

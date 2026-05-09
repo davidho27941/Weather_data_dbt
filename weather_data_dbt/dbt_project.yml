@@ -29,16 +29,16 @@ dispatch:
 # ---------------------------------------------------------------------------
 # Variables
 #
-# bronze_project: the GCP project that hosts the weather_raw bronze dataset.
-# All three envs (dev/stg/prod) read from the same source by default; export
-# BRONZE_PROJECT to override on a per-env basis (e.g. when prod stands up
-# its own bronze pipeline).
-#
 # measurements_lookback_days: how far back the daily incremental MERGE
 # re-scans, to absorb late-arriving data. Bump for backfills.
+#
+# Note: bronze location is NOT a var. It is read directly via env_var() in
+# models/staging/_sources.yml — dbt does not recursively render Jinja
+# stored in `vars:`, so an env_var indirection at this level would surface
+# the literal Jinja string in compiled SQL. Export BRONZE_PROJECT to
+# override the default `side-project-staging`.
 # ---------------------------------------------------------------------------
 vars:
-  bronze_project: "{{ env_var('BRONZE_PROJECT', 'side-project-staging') }}"
   measurements_lookback_days: 5
 
 # ---------------------------------------------------------------------------

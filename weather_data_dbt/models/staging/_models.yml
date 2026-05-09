@@ -1,0 +1,203 @@
+version: 2
+
+models:
+  - name: stg_observations
+    description: |
+      Cleaned 10-minute weather observations.
+
+      Each measurement field appears as TWO columns:
+        <field>_raw  STRING    original CWA value (e.g. '25.3', 'X', '-98', '990')
+        <field>      FLOAT64   sentinel-translated value (NULL or numeric)
+
+      Sentinel rules per CWA Open Data spec V1.05 (dataset O-A0003-001):
+        'X'   instrument malfunction         → NULL
+        'T'   trace amount of precipitation  → 0 (precipitation only)
+        '-99' missing / abnormal             → NULL
+        '-98' no rain in past 6 hours        → 0 (precipitation only)
+        '990' calm wind, undefined direction → NULL (wind direction only)
+
+      Per-row capability flags (`has_*_sensor`) surface whether the station
+      is expected to carry pressure / sunshine / UV sensors (only manned
+      stations do). Use these to distinguish "field not measured at this
+      station" from "measurement missing at this snapshot".
+    columns:
+      # ----- ids and station context -----
+      - name: station_id
+        description: CWA station ID (alphanumeric, e.g. '466920' or 'C0R860').
+        tests:
+          - not_null
+      - name: station_name
+        description: Station name (zh-TW).
+      - name: station_type
+        description: 有人站 (manned) / 自動站 (automatic) / 農業雨量站 (agricultural rain-fall).
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['有人站', '自動站', '農業雨量站']
+
+      # ----- capability flags -----
+      - name: has_pressure_sensor
+        description: True if station type is 有人站; only manned stations measure air pressure.
+      - name: has_sunshine_sensor
+        description: True if station type is 有人站.
+      - name: has_uv_sensor
+        description: True if station type is 有人站.
+
+      # ----- numeric measurements (raw + cleaned) -----
+      - name: air_temperature_raw
+        description: |
+          Raw air temperature value as recorded by CWA (STRING). Sentinels:
+          'X' (instrument fail), '-99' (missing).
+      - name: air_temperature
+        description: |
+          Air temperature in degrees Celsius (FLOAT64). NULL if sentinel
+          ('X' / '-99' / '-999') in raw.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: -30
+                max_value: 50
+                inclusive: true
+              config:
+                where: air_temperature is not null
+
+      - name: air_pressure_raw
+        description: Raw station pressure (STRING). Sentinels 'X' / '-99'. Only manned stations measure pressure.
+      - name: air_pressure
+        description: Station pressure in hPa (FLOAT64). NULL if sentinel.
+
+      - name: relative_humidity_raw
+        description: Raw relative humidity (STRING). Sentinels 'X' / '-99'.
+      - name: relative_humidity
+        description: Relative humidity in % (FLOAT64). NULL if sentinel.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+                inclusive: true
+              config:
+                where: relative_humidity is not null
+
+      - name: wind_speed_raw
+        description: Raw mean wind speed (STRING). Sentinels 'X' / '-99'.
+      - name: wind_speed
+        description: Mean wind speed in m/s (FLOAT64). NULL if sentinel.
+
+      - name: wind_direction_raw
+        description: Raw mean wind direction (STRING). Sentinels 'X' / '-99' / '990' (calm wind).
+      - name: wind_direction
+        description: Mean wind direction in degrees (FLOAT64). NULL if sentinel including '990'.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 360
+                inclusive: true
+              config:
+                where: wind_direction is not null
+
+      - name: wind_direction_gust_raw
+        description: Raw wind direction at peak gust (STRING). Sentinels 'X' / '-99' / '990'.
+      - name: wind_direction_gust
+        description: Wind direction at peak gust in degrees (FLOAT64). NULL if sentinel.
+
+      - name: peak_gust_speed_raw
+        description: Raw peak gust speed (STRING). Sentinels 'X' / '-99'.
+      - name: peak_gust_speed
+        description: Peak gust speed in m/s (FLOAT64).
+
+      - name: precipitation_raw
+        description: |
+          Raw precipitation (STRING). Sentinels 'X' / 'T' (trace) / '-99' /
+          '-98' (no rain in past 6h). Legacy backfill also carries -990 as
+          an undocumented sentinel. Use this column to distinguish "no rain
+          measured" from "trace amount" from "no rain in past 6 hours".
+      - name: precipitation
+        description: |
+          Precipitation in mm (FLOAT64). 'X' / -99 / -999 / -990 → NULL;
+          'T' → 0; -98 → 0; otherwise the parsed value. Sentinel matching
+          uses SAFE_CAST, so '-99' and '-99.0' both translate.
+
+      - name: sunshine_duration_10min_raw
+        description: Raw sunshine duration (STRING). Sentinels 'X' / '-99'. Only manned stations.
+      - name: sunshine_duration_10min
+        description: Sunshine duration in hours over the 10-min bucket (FLOAT64).
+
+      - name: uv_index_raw
+        description: Raw UV index (STRING). Sentinels 'X' / '-99'. Only manned stations.
+      - name: uv_index
+        description: UV index (FLOAT64). Spec says integer but legacy data has decimals.
+
+      # ----- string measurements (raw + cleaned) -----
+      - name: weather_status_raw
+        description: |
+          Raw weather phenomenon (STRING). Per spec V1.05 the valid values
+          are the 60 combinations of cloud cover (晴/多雲/陰) + phenomenon
+          (有雨/有雷雨/有陣雨/...). Spec lists no sentinel codes; defensive
+          cleaning catches '-99' / 'X' if they appear.
+      - name: weather_status
+        description: Weather phenomenon (STRING). NULL if raw was '-99' or 'X'.
+
+      - name: visibility_raw
+        description: |
+          Raw visibility category (STRING, e.g. '>30'). Per spec only '-99'
+          is documented; defensive cleaning also catches 'X'.
+      - name: visibility
+        description: Visibility category. NULL if raw was '-99' or 'X'.
+
+      # ----- timestamps and provenance -----
+      - name: measure_at
+        description: Observation timestamp (BQ TIMESTAMP, UTC internally).
+        tests:
+          - not_null
+      - name: measure_date
+        description: Observation calendar date in Asia/Taipei (BQ DATE).
+      - name: ingest_at
+        description: Crawler ingest timestamp; NULL for legacy rows.
+      - name: ingest_source
+        description: "'new' (current crawler) or 'legacy' (historical s3 backfill)."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['new', 'legacy']
+
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [station_id, measure_at]
+
+  - name: stg_weather_stations
+    description: |
+      Latest CWA weather station snapshot, manned + unmanned merged. One
+      row per station_id. Source: `weather_raw.weather_stations` bronze.
+    columns:
+      - name: station_id
+        description: CWA station ID.
+        tests:
+          - not_null
+          - unique
+      - name: station_type
+        description: 有人站 / 自動站 / 農業雨量站 (derived from station_id prefix).
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['有人站', '自動站', '農業雨量站']
+      - name: ingest_source
+        description: "'manned' (C-B0074-001) or 'unmanned' (C-B0074-002)."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['manned', 'unmanned']
+
+  - name: stg_rain_fall_stations
+    description: |
+      Latest agricultural rain-fall station snapshot. One row per
+      station_id. Source: `weather_raw.rain_fall_stations` bronze.
+    columns:
+      - name: station_id
+        tests:
+          - not_null
+          - unique
