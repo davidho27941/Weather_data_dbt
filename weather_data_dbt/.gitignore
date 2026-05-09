@@ -2,3 +2,8 @@
 target/
 dbt_packages/
 logs/
+
+# dbt profile with real credentials / project IDs.
+# Use profiles/profiles.example.yml as a template.
+profiles/profiles.yml
+.user.yml

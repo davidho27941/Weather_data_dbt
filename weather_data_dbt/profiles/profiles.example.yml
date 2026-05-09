@@ -1,0 +1,60 @@
+# dbt profile for the weather_data_dbt project.
+#
+# How to use:
+#   1. Copy this file to ~/.dbt/profiles.yml (or to weather_data_dbt/profiles/profiles.yml
+#      and export DBT_PROFILES_DIR=$(pwd)/weather_data_dbt/profiles).
+#   2. Adjust env-var defaults below to your project IDs if needed.
+#   3. Authenticate: `gcloud auth application-default login` for dev / stg local
+#      use; Cloud Run Jobs auto-authenticate via Workload Identity.
+#
+# Environments:
+#   - dev:  individual developer's local runs. Outputs land in
+#           `weather_dev_staging` / `weather_dev_intermediate` / `weather_dev_marts`
+#           datasets (via the custom generate_schema_name macro).
+#   - stg:  pre-production / scheduled daily build. Outputs in
+#           `weather_staging` / `weather_intermediate` / `weather_marts`.
+#   - prod: production. Same dataset names as stg but in a separate GCP project,
+#           with stricter IAM and Workload Identity authentication.
+#
+# All three envs read source data from the same `weather_raw` dataset by default
+# (override via the `BRONZE_PROJECT` env var, picked up in dbt_project.yml's vars).
+
+weather_data_dbt:
+  target: dev   # default to dev; CI / Cloud Run override via DBT_TARGET
+
+  outputs:
+    # ----- Local development ----------------------------------------------
+    dev:
+      type: bigquery
+      method: oauth                         # uses gcloud application-default credentials
+      project: "{{ env_var('DBT_DEV_PROJECT', 'side-project-staging') }}"
+      dataset: "{{ env_var('DBT_DEV_DATASET', 'weather') }}"
+      location: "{{ env_var('BQ_LOCATION', 'asia-east1') }}"
+      threads: 4
+      priority: interactive
+      job_retries: 1
+      job_execution_timeout_seconds: 600
+
+    # ----- Staging (automated daily build, current source of truth) -------
+    stg:
+      type: bigquery
+      method: oauth                         # switch to Workload Identity once on Cloud Run
+      project: "{{ env_var('DBT_STG_PROJECT', 'side-project-staging') }}"
+      dataset: "{{ env_var('DBT_STG_DATASET', 'weather') }}"
+      location: "{{ env_var('BQ_LOCATION', 'asia-east1') }}"
+      threads: 4
+      priority: batch
+      job_retries: 2
+      job_execution_timeout_seconds: 1800
+
+    # ----- Production (placeholder; project does not yet exist) -----------
+    prod:
+      type: bigquery
+      method: oauth                         # MUST switch to Workload Identity before going live
+      project: "{{ env_var('DBT_PROD_PROJECT', 'side-project-prod') }}"
+      dataset: "{{ env_var('DBT_PROD_DATASET', 'weather') }}"
+      location: "{{ env_var('BQ_LOCATION', 'asia-east1') }}"
+      threads: 8
+      priority: batch
+      job_retries: 3
+      job_execution_timeout_seconds: 3600
