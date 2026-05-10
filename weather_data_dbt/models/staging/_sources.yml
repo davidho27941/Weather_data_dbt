@@ -23,9 +23,18 @@ sources:
           s3-bucket backfill, distinguished by `ingest_source`.
         config:
           loaded_at_field: ingest_at
+          # Bronze observations is loaded by a daily MERGE
+          # (`bronze-daily-load` Cloud Run Job, 02:00 Asia/Taipei) that
+          # ingests YESTERDAY's crawler files. So MAX(ingest_at) is at
+          # best ~2h old (right after MERGE) and at worst ~26h old (right
+          # before next day's MERGE). Tight 30/90 minute thresholds would
+          # ERROR for 24h every day even when everything is healthy.
+          # Freshness here therefore monitors "did the daily MERGE run?",
+          # not "is the crawler up". Crawler health is monitored via
+          # Cloud Run Job execution alerts on bronze-daily-load itself.
           freshness:
-            warn_after:  { count: 30, period: minute }
-            error_after: { count: 90, period: minute }
+            warn_after:  { count: 36, period: hour }
+            error_after: { count: 72, period: hour }
         columns:
           - name: station_id
             description: CWA station ID (alphanumeric, e.g. '466920' or 'C0R860').
@@ -49,9 +58,13 @@ sources:
           the snapshot came from.
         config:
           loaded_at_field: ingest_at
-          freshness:
-            warn_after:  { count: 36, period: hour }
-            error_after: { count: 72, period: hour }
+          # Station metadata is loaded once via infra/bq/03_create_stations.sh
+          # and not refreshed on a schedule (CWA station list changes
+          # infrequently — new stations / decommissions are handled by an
+          # ad-hoc re-run of the bulk load). dbt source freshness has
+          # nothing to monitor here, so we explicitly opt out rather than
+          # generate noise on dbt-hourly-freshness.
+          freshness: null
         columns:
           - name: station_id
           - name: ingest_source
@@ -63,8 +76,7 @@ sources:
           station_id.
         config:
           loaded_at_field: ingest_at
-          freshness:
-            warn_after:  { count: 36, period: hour }
-            error_after: { count: 72, period: hour }
+          # See note on weather_stations above — same rationale.
+          freshness: null
         columns:
           - name: station_id
