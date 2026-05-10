@@ -1,0 +1,170 @@
+[
+  {
+    "name": "ingested_at",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Crawler-injected ingest timestamp, format YYYY-MM-DD_HH_MM. NULL for legacy data that predates the crawler."
+  },
+  {
+    "name": "records",
+    "type": "RECORD",
+    "mode": "NULLABLE",
+    "fields": [
+      {
+        "name": "Station",
+        "type": "RECORD",
+        "mode": "REPEATED",
+        "description": "One element per weather station observed in this snapshot (CWA O-A0003-001).",
+        "fields": [
+          {"name": "StationId",   "type": "STRING", "mode": "NULLABLE", "description": "CWA station ID. Alphanumeric (e.g. '466920' or 'C0R860'). 46 prefix = manned, C0/C1 prefix = automatic, others = agricultural."},
+          {"name": "StationName", "type": "STRING", "mode": "NULLABLE"},
+          {
+            "name": "ObsTime",
+            "type": "RECORD",
+            "mode": "NULLABLE",
+            "fields": [
+              {"name": "DateTime", "type": "TIMESTAMP", "mode": "NULLABLE", "description": "Observation timestamp, ISO-8601 with +08:00 offset (Asia/Taipei)."}
+            ]
+          },
+          {
+            "name": "GeoInfo",
+            "type": "RECORD",
+            "mode": "NULLABLE",
+            "fields": [
+              {"name": "CountyName",      "type": "STRING", "mode": "NULLABLE"},
+              {"name": "CountyCode",      "type": "STRING", "mode": "NULLABLE", "description": "縣市代碼 (e.g. '10013', '63000'). Stored as STRING to preserve administrative-ID semantics."},
+              {"name": "TownName",        "type": "STRING", "mode": "NULLABLE"},
+              {"name": "TownCode",        "type": "STRING", "mode": "NULLABLE", "description": "鄉鎮代碼 (e.g. '10013240', '63000050')."},
+              {"name": "StationAltitude", "type": "FLOAT",  "mode": "NULLABLE", "description": "Station altitude in meters. Static metadata; no sentinels per spec."},
+              {
+                "name": "Coordinates",
+                "type": "RECORD",
+                "mode": "REPEATED",
+                "fields": [
+                  {"name": "StationLatitude",  "type": "FLOAT",  "mode": "NULLABLE"},
+                  {"name": "StationLongitude", "type": "FLOAT",  "mode": "NULLABLE"},
+                  {"name": "CoordinateFormat", "type": "STRING", "mode": "NULLABLE", "description": "Always 'decimal degrees' per spec."},
+                  {"name": "CoordinateName",   "type": "STRING", "mode": "NULLABLE", "description": "WGS84 or TWD67."}
+                ]
+              }
+            ]
+          },
+          {
+            "name": "WeatherElement",
+            "type": "RECORD",
+            "mode": "NULLABLE",
+            "description": "Measurement fields. All numeric values stored as STRING to preserve CWA sentinel codes ('X' instrument fail, 'T' trace, '-99' missing, '-98' no rain in 6h, '990' calm wind). dbt staging translates them to FLOAT64 with separate raw + cleaned columns.",
+            "fields": [
+              {"name": "AirTemperature",        "type": "STRING", "mode": "NULLABLE", "description": "Air temperature in °C. Sentinels: 'X' (instrument fail), '-99' (missing)."},
+              {"name": "AirPressure",           "type": "STRING", "mode": "NULLABLE", "description": "Station pressure in hPa. Sentinels: 'X', '-99'."},
+              {"name": "RelativeHumidity",      "type": "STRING", "mode": "NULLABLE", "description": "Relative humidity in %. Sentinels: 'X', '-99'."},
+              {"name": "WindSpeed",             "type": "STRING", "mode": "NULLABLE", "description": "Mean wind speed in m/s. Sentinels: 'X', '-99'."},
+              {"name": "WindDirection",         "type": "STRING", "mode": "NULLABLE", "description": "Mean wind direction in degrees. Sentinels: 'X', '-99', '990' (calm wind, undefined)."},
+              {"name": "SunshineDuration",     "type": "STRING", "mode": "NULLABLE", "description": "Sunshine duration in hours (10-min bucket). Sentinels: 'X', '-99'."},
+              {"name": "UVIndex",               "type": "STRING", "mode": "NULLABLE", "description": "UV index. Spec says integer but legacy data has decimals. Sentinels: 'X', '-99'."},
+              {"name": "Weather",               "type": "STRING", "mode": "NULLABLE", "description": "Cloud cover + weather phenomenon (e.g. '晴', '多雲有雨'). Spec lists no sentinel codes; defensive cleaning treats 'X' / '-99' as NULL."},
+              {"name": "VisibilityDescription", "type": "STRING", "mode": "NULLABLE", "description": "Visibility category (e.g. '>30'). Spec lists '-99' as missing; defensive treatment also catches 'X'."},
+              {
+                "name": "Now",
+                "type": "RECORD",
+                "mode": "NULLABLE",
+                "fields": [
+                  {"name": "Precipitation", "type": "STRING", "mode": "NULLABLE", "description": "Current precipitation in mm. Sentinels: 'X' (instrument fail), 'T' (trace, ~0), '-99' (missing), '-98' (no rain in past 6 hours)."}
+                ]
+              },
+              {
+                "name": "GustInfo",
+                "type": "RECORD",
+                "mode": "NULLABLE",
+                "fields": [
+                  {"name": "PeakGustSpeed", "type": "STRING", "mode": "NULLABLE", "description": "Peak gust speed in m/s. Sentinels: 'X', '-99'."},
+                  {
+                    "name": "Occurred_at",
+                    "type": "RECORD",
+                    "mode": "NULLABLE",
+                    "fields": [
+                      {"name": "DateTime",      "type": "STRING", "mode": "NULLABLE", "description": "Time the peak gust occurred (ISO-8601). STRING to avoid auto-cast issues; downstream parses as needed."},
+                      {"name": "WindDirection", "type": "STRING", "mode": "NULLABLE", "description": "Wind direction at peak gust in degrees. Sentinels: 'X', '-99', '990' (calm)."}
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Max10MinAverage",
+                "type": "RECORD",
+                "mode": "NULLABLE",
+                "description": "Highest 10-minute average wind today. Currently NOT surfaced in our flat bronze observations table; available in raw JSON.",
+                "fields": [
+                  {"name": "WindSpeed", "type": "STRING", "mode": "NULLABLE", "description": "Sentinels: 'X', '-99'."},
+                  {
+                    "name": "Occurred_at",
+                    "type": "RECORD",
+                    "mode": "NULLABLE",
+                    "fields": [
+                      {"name": "DateTime",      "type": "STRING", "mode": "NULLABLE"},
+                      {"name": "WindDirection", "type": "STRING", "mode": "NULLABLE", "description": "Sentinels: 'X', '-99', '990'."}
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "DailyExtreme",
+                "type": "RECORD",
+                "mode": "NULLABLE",
+                "description": "Daily high/low temperature. Currently NOT surfaced in our flat bronze observations; available in raw JSON.",
+                "fields": [
+                  {
+                    "name": "DailyHigh",
+                    "type": "RECORD",
+                    "mode": "NULLABLE",
+                    "fields": [
+                      {
+                        "name": "TemperatureInfo",
+                        "type": "RECORD",
+                        "mode": "NULLABLE",
+                        "fields": [
+                          {"name": "AirTemperature", "type": "STRING", "mode": "NULLABLE", "description": "Daily high temperature °C. Sentinels: 'X', '-99'."},
+                          {
+                            "name": "Occurred_at",
+                            "type": "RECORD",
+                            "mode": "NULLABLE",
+                            "fields": [
+                              {"name": "DateTime", "type": "STRING", "mode": "NULLABLE"}
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "name": "DailyLow",
+                    "type": "RECORD",
+                    "mode": "NULLABLE",
+                    "fields": [
+                      {
+                        "name": "TemperatureInfo",
+                        "type": "RECORD",
+                        "mode": "NULLABLE",
+                        "fields": [
+                          {"name": "AirTemperature", "type": "STRING", "mode": "NULLABLE", "description": "Daily low temperature °C. Sentinels: 'X', '-99'."},
+                          {
+                            "name": "Occurred_at",
+                            "type": "RECORD",
+                            "mode": "NULLABLE",
+                            "fields": [
+                              {"name": "DateTime", "type": "STRING", "mode": "NULLABLE"}
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]

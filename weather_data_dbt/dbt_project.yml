@@ -1,57 +1,98 @@
-
-# Name your project! Project names should contain only lowercase characters
-# and underscores. A good package name should reflect your organization's
-# name or the intended use of these models
 name: 'weather_data_dbt'
-version: '1.0.0'
+version: '2.0.0'
 config-version: 2
 
-# This setting configures which "profile" dbt uses for this project.
+# Resolved from profiles.yml (see profiles/profiles.example.yml).
 profile: 'weather_data_dbt'
 
-# These configurations specify where dbt should look for different types of files.
-# The `model-paths` config, for example, states that models in this project can be
-# found in the "models/" directory. You probably won't need to change these!
-model-paths: ["models"]
+require-dbt-version: ">=1.8.0"
+
+model-paths:    ["models"]
 analysis-paths: ["analyses"]
-test-paths: ["tests"]
-seed-paths: ["seeds"]
-macro-paths: ["macros"]
+test-paths:     ["tests"]
+seed-paths:     ["seeds"]
+macro-paths:    ["macros"]
 snapshot-paths: ["snapshots"]
 
-target-path: "target"  # directory which will store compiled SQL files
-clean-targets:         # directories to be removed by `dbt clean`
+target-path: "target"
+clean-targets:
   - "target"
   - "dbt_packages"
 
+# ---------------------------------------------------------------------------
+# Project-level dispatch (for dbt-external-tables et al if introduced later)
+# ---------------------------------------------------------------------------
+dispatch:
+  - macro_namespace: dbt_utils
+    search_order: ['weather_data_dbt', 'dbt_utils']
 
-# Configuring models
-# Full documentation: https://docs.getdbt.com/docs/configuring-models
+# ---------------------------------------------------------------------------
+# Variables
+#
+# measurements_lookback_days: how far back the weekly incremental MERGE
+# re-scans, to absorb late-arriving data. The build runs Mon 02:30
+# Asia/Taipei, so 10 days = 7-day cadence + 3-day late-arrival buffer.
+# Bump further for backfills.
+#
+# ci_sample_days: when > 0, stg_observations restricts the bronze read to
+# the most recent N days. Used by GitHub Actions CI (target=ci) to keep
+# build cost under a minute on a few hundred thousand rows. Default 0
+# means no filter (full bronze, used by dev / stg / prod).
+#
+# Note: bronze location is NOT a var. It is read directly via env_var() in
+# models/staging/_sources.yml — dbt does not recursively render Jinja
+# stored in `vars:`, so an env_var indirection at this level would surface
+# the literal Jinja string in compiled SQL. Export BRONZE_PROJECT to
+# override the default `side-project-staging`.
+# ---------------------------------------------------------------------------
+vars:
+  measurements_lookback_days: 10
+  ci_sample_days: 0
 
-# In dbt, the default materialization for a model is a view. This means, when you run 
-# dbt run or dbt build, all of your models will be built as a view in your data platform. 
-# The configuration below will override this setting for models in the example folder to 
-# instead be materialized as tables. Any models you add to the root of the models folder will 
-# continue to be built as views. These settings can be overridden in the individual model files
-# using the `{{ config(...) }}` macro.
-
+# ---------------------------------------------------------------------------
+# Model configurations
+#
+# Per-layer schema config gets routed through the custom
+# `generate_schema_name` macro (macros/generate_schema_name.sql) which adds a
+# `_dev` infix when target.name == 'dev', so a single profile dataset
+# `weather` becomes `weather_dev_staging` / `weather_dev_intermediate` / ...
+# in dev, and `weather_staging` / `weather_intermediate` / ... in stg/prod.
+# ---------------------------------------------------------------------------
 models:
   weather_data_dbt:
+    +persist_docs:
+      relation: true
+      columns: true
+
     staging:
       +schema: staging
       +materialized: view
+
     intermediate:
       +schema: intermediate
       +materialized: table
+      # int_measurements__cleaned overrides via {{ config(...) }} in the model
+      # file (incremental + partition + cluster).
+
+    marts:
+      +schema: marts
+      +incremental_strategy: merge
+
+      # Time-grain measurement facts. Each grain is a separate model with
+      # its own partition.
       measurements:
         +materialized: incremental
-        +incremental_strategy: merge
         +unique_key: ['station_id', 'measure_at']
-    artifacts:
-      +schema: artifacts
-      measurements:
-        +materialized: incremental
-        +incremental_strategy: merge
-        +unique_key: ['station_id', 'measure_at']
+        +partition_by:
+          field: measure_at
+          data_type: timestamp
+          granularity: day
+        +cluster_by: ['station_id', 'station_type']
+        +on_schema_change: append_new_columns
+
+      # Station dimensions are slow-changing and small; rebuild fully each run.
       stations:
         +materialized: table
+
+# Source freshness defaults are configured per-table in
+# models/staging/_sources.yml (under `config:` blocks).

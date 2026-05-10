@@ -16,7 +16,8 @@
 #
 set -euo pipefail
 
-PROJECT="${GCP_PROJECT_ID:-side-project-weather}"
+PROJECT="${GCP_PROJECT_ID:-side-project-staging}"
+LOCATION="${BQ_LOCATION:-asia-east1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SQL_FILE="${SCRIPT_DIR}/daily_load.sql"
 
@@ -28,9 +29,14 @@ if [ -n "${TARGET_DATE}" ]; then
 else
   echo "Daily load — target_date defaults to yesterday in Asia/Taipei"
 fi
+echo "             project=${PROJECT}  location=${LOCATION}"
 
+# --location is mandatory: weather_raw is in asia-east1 but bq's default
+# is US, so without it the query lands on the wrong region and errors
+# out with "Dataset weather_raw was not found in location US".
 bq query \
   --project_id="${PROJECT}" \
+  --location="${LOCATION}" \
   --use_legacy_sql=false \
   --max_rows=0 \
   --parameter="target_date:STRING:${TARGET_DATE}" \

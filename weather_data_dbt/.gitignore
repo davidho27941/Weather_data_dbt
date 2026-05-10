@@ -2,3 +2,14 @@
 target/
 dbt_packages/
 logs/
+
+# dbt profile with real credentials / project IDs.
+# Use profiles/profiles.example.yml as a template.
+profiles/profiles.yml
+.user.yml
+
+# GCP service account keys (e.g. gha-ci-key.json, gha-cd-key.json).
+# Should only ever live ephemerally on a workstation between
+# `gcloud iam service-accounts keys create` and pasting into GitHub Secrets.
+*-key.json
+*-credentials.json

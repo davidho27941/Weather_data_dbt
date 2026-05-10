@@ -1,80 +1,97 @@
-name: GitHub dbt Docs Generation
-run-name: GitHub dbt Docs Generation
-on: 
+name: dbt docs
+
+# Generates `dbt docs` (manifest, catalog, static index.html) on every push
+# to main that touches the dbt project, and publishes the static site to
+# GitHub Pages.
+#
+# Compiles against the `ci` BigQuery target (read access to weather_raw +
+# weather_ci_* is enough to introspect schemas — no models are built here).
+#
+# Required secrets:
+#   GCP_SA_KEY_CI     same SA key used by dbt_ci.yml.
+
+on:
   push:
+    branches:
+      - main
     paths:
-      - weather_data_dbt/**
+      - 'weather_data_dbt/**'
+      - '.github/workflows/build_dbt_docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  # NOTE: do NOT name these DBT_PROJECT_DIR / DBT_PROFILES_DIR — dbt-core
+  # picks those up automatically and combines with --project-dir, breaking
+  # the path when also using `working-directory: weather_data_dbt`.
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'side-project-staging' }}
+  BQ_LOCATION: ${{ vars.BQ_LOCATION || 'asia-east1' }}
+  DBT_CI_PROJECT: ${{ vars.GCP_PROJECT_ID || 'side-project-staging' }}
+  BRONZE_PROJECT: ${{ vars.GCP_PROJECT_ID || 'side-project-staging' }}
 
 jobs:
-  build_docs:
+  build:
     runs-on: ubuntu-latest
-    environment: dev
-    env:
-      profile: ${{ secrets.dbt_profile }}
+    timeout-minutes: 15
     steps:
-      - name: "1. Checkout branch."
-        id: step-01
-        uses: actions/checkout@v3
-      
-      - name: "2. Install dbt"
-        id: step-02
-        run: pip3 install dbt-core dbt-snowflake
-      
-      - name: "test: secret to file"
-        uses: mobiledevops/secret-to-file-action@v1
-        with:
-          base64-encoded-secret: ${{ secrets.dbt_profile }}
-          filename: "profiles.yml"
-          working-directory: weather_data_dbt
-      
-      - name: "test: test if secret to file works as expect"
-        run: ls -al weather_data_dbt
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: "3. Compile dbt"
-        id: step-03
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dbt-bigquery
+        # Match dbt_ci.yml — pinned to the local uv venv minor (1.11.x) so
+        # CI can read the package-lock.yml shape produced locally.
+        run: pip install 'dbt-core>=1.11,<1.12' 'dbt-bigquery>=1.11,<1.12'
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY_CI }}
+
+      - name: Stage profiles.yml from template
         working-directory: weather_data_dbt
-        run: |
-          dbt deps
-          dbt compile --profiles-dir .
+        run: cp profiles/profiles.example.yml profiles/profiles.yml
 
-      - name: "4. Generate dbt docs"
-        id: step-04
+      - name: dbt deps
         working-directory: weather_data_dbt
+        run: dbt deps --profiles-dir profiles
+
+      - name: dbt docs generate
+        working-directory: weather_data_dbt
+        run: dbt --no-use-colors docs generate --target ci --profiles-dir profiles
+
+      - name: Stage docs site
         run: |
-          dbt deps
-          dbt docs generate --profiles-dir .
-          cd target
-          mkdir ${{ github.workspace }}/docs
-          cp *.json *.html graph.gpickle ${{ github.workspace }}/docs
-          ls -ltra ${{ github.workspace }}/docs
+          mkdir -p docs_site
+          cp weather_data_dbt/target/index.html        docs_site/
+          cp weather_data_dbt/target/manifest.json     docs_site/
+          cp weather_data_dbt/target/catalog.json      docs_site/
+          cp weather_data_dbt/target/run_results.json  docs_site/ 2>/dev/null || true
 
-      - name: "5. Upload artifacts"
-        id: step-05
-        uses: actions/upload-pages-artifact@v2
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          path: ${{ github.workspace }}/docs
+          path: docs_site
 
-      - name: "6. Zip artifacts"
-        id: step-06
-        run: zip -jrq docs.zip ${{ github.workspace }}/docs
-
-      - name: "7. Upload artifact for deployment."
-        id: step07
-        uses: actions/upload-artifact@v3
-        with:
-          name: docs
-          path: docs.zip
-
-  deploy-gh-page:
-    needs: build_docs
-    permissions:
-      pages: write 
-      id-token: write
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
     steps:
-      - name: "Deploy to Github Pages"
+      - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v2
+        uses: actions/deploy-pages@v4

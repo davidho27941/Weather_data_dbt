@@ -20,7 +20,7 @@
 #
 set -euo pipefail
 
-PROJECT="${GCP_PROJECT_ID:-side-project-weather}"
+PROJECT="${GCP_PROJECT_ID:-side-project-staging}"
 DATASET="${BQ_DATASET:-weather_raw}"
 
 # Detect whether legacy staging exists. If not, generate an empty CTE so the
@@ -46,8 +46,7 @@ fi
 bq query \
   --project_id="${PROJECT}" \
   --use_legacy_sql=false \
-  --max_rows=0 \
-"$(cat <<SQL
+  --max_rows=0 <<SQL
 CREATE OR REPLACE TABLE \`${PROJECT}.${DATASET}.observations\`
 PARTITION BY measure_date
 CLUSTER BY station_id, station_type
@@ -104,9 +103,10 @@ SELECT
   station.GeoInfo.TownCode                                   AS town_code,
   station.GeoInfo.StationAltitude                            AS station_altitude,
 
-  -- TIMESTAMP() with timezone tags the naive Asia/Taipei datetime as UTC+8.
-  -- Adjust if CWA's ObsTime.DateTime turns out to be UTC or includes offset.
-  TIMESTAMP(station.ObsTime.DateTime, 'Asia/Taipei')         AS measure_at,
+  -- ObsTime.DateTime is loaded as TIMESTAMP (CWA payload is ISO-8601 with
+  -- +08:00 offset, BQ parses to UTC-anchored TIMESTAMP). Calendar date is
+  -- extracted in Asia/Taipei so a Taipei-day groups correctly.
+  station.ObsTime.DateTime                                   AS measure_at,
   DATE(station.ObsTime.DateTime, 'Asia/Taipei')              AS measure_date,
   ingest_at,
   ingest_source,
@@ -121,6 +121,5 @@ SELECT
 FROM ranked
 WHERE rn = 1;
 SQL
-)"
 
 echo "Created ${PROJECT}:${DATASET}.observations. Run 03_create_stations.sh next."
