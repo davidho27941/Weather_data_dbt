@@ -1,0 +1,16 @@
+# Terraform working artifacts.
+.terraform/
+.terraform.lock.hcl   # comment this out if you decide to commit lock files
+
+# Local state files (we use the GCS backend, but in a recovery scenario
+# the migration could drop these).
+*.tfstate
+*.tfstate.*
+
+# Per-environment values + sensitive overrides.
+terraform.tfvars
+*.auto.tfvars
+
+# Plan artifacts.
+tfplan
+tfplan.*

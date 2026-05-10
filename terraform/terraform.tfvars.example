@@ -1,0 +1,10 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+# Defaults in variables.tf cover everything except alert_email.
+
+alert_email = "davidho.prime@gmail.com"
+
+# Override these only if you stand up a new env (e.g. side-project-prod):
+# project    = "side-project-prod"
+# region     = "asia-east1"
+# ar_repo    = "dbt"
+# gcs_bucket = "side-project-weather-data-prod"
