@@ -41,8 +41,9 @@ permissions:
   id-token: write   # reserved for future WIF migration; harmless with key auth
 
 env:
-  DBT_PROJECT_DIR: weather_data_dbt
-  DBT_PROFILES_DIR: weather_data_dbt/profiles
+  # NOTE: do NOT name these DBT_PROJECT_DIR / DBT_PROFILES_DIR — dbt-core
+  # picks those up automatically and combines with --project-dir, breaking
+  # the path when also using `working-directory: weather_data_dbt`.
   GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'side-project-staging' }}
   BQ_LOCATION: ${{ vars.BQ_LOCATION || 'asia-east1' }}
   DBT_CI_PROJECT: ${{ vars.GCP_PROJECT_ID || 'side-project-staging' }}
@@ -71,22 +72,23 @@ jobs:
           credentials_json: ${{ secrets.GCP_SA_KEY_CI }}
 
       - name: Stage profiles.yml from template
-        working-directory: ${{ env.DBT_PROJECT_DIR }}
+        working-directory: weather_data_dbt
         run: cp profiles/profiles.example.yml profiles/profiles.yml
 
       - name: dbt deps
-        working-directory: ${{ env.DBT_PROJECT_DIR }}
-        run: dbt deps
+        working-directory: weather_data_dbt
+        run: dbt deps --profiles-dir profiles
 
       - name: dbt parse
-        working-directory: ${{ env.DBT_PROJECT_DIR }}
-        run: dbt --no-use-colors parse --target ci
+        working-directory: weather_data_dbt
+        run: dbt --no-use-colors parse --target ci --profiles-dir profiles
 
       - name: dbt build (sampled, full-refresh)
-        working-directory: ${{ env.DBT_PROJECT_DIR }}
+        working-directory: weather_data_dbt
         run: |
           dbt --no-use-colors build \
             --target ci \
+            --profiles-dir profiles \
             --full-refresh \
             --vars '{ci_sample_days: 7}'
 
@@ -96,8 +98,8 @@ jobs:
         with:
           name: dbt-target-${{ github.run_id }}
           path: |
-            ${{ env.DBT_PROJECT_DIR }}/target/run_results.json
-            ${{ env.DBT_PROJECT_DIR }}/target/manifest.json
-            ${{ env.DBT_PROJECT_DIR }}/target/compiled
+            weather_data_dbt/target/run_results.json
+            weather_data_dbt/target/manifest.json
+            weather_data_dbt/target/compiled
           if-no-files-found: warn
           retention-days: 7

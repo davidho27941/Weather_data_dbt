@@ -29,8 +29,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  DBT_PROJECT_DIR: weather_data_dbt
-  DBT_PROFILES_DIR: weather_data_dbt/profiles
+  # NOTE: do NOT name these DBT_PROJECT_DIR / DBT_PROFILES_DIR — dbt-core
+  # picks those up automatically and combines with --project-dir, breaking
+  # the path when also using `working-directory: weather_data_dbt`.
   GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'side-project-staging' }}
   BQ_LOCATION: ${{ vars.BQ_LOCATION || 'asia-east1' }}
   DBT_CI_PROJECT: ${{ vars.GCP_PROJECT_ID || 'side-project-staging' }}
@@ -58,24 +59,24 @@ jobs:
           credentials_json: ${{ secrets.GCP_SA_KEY_CI }}
 
       - name: Stage profiles.yml from template
-        working-directory: ${{ env.DBT_PROJECT_DIR }}
+        working-directory: weather_data_dbt
         run: cp profiles/profiles.example.yml profiles/profiles.yml
 
       - name: dbt deps
-        working-directory: ${{ env.DBT_PROJECT_DIR }}
-        run: dbt deps
+        working-directory: weather_data_dbt
+        run: dbt deps --profiles-dir profiles
 
       - name: dbt docs generate
-        working-directory: ${{ env.DBT_PROJECT_DIR }}
-        run: dbt --no-use-colors docs generate --target ci
+        working-directory: weather_data_dbt
+        run: dbt --no-use-colors docs generate --target ci --profiles-dir profiles
 
       - name: Stage docs site
         run: |
           mkdir -p docs_site
-          cp ${DBT_PROJECT_DIR}/target/index.html        docs_site/
-          cp ${DBT_PROJECT_DIR}/target/manifest.json     docs_site/
-          cp ${DBT_PROJECT_DIR}/target/catalog.json      docs_site/
-          cp ${DBT_PROJECT_DIR}/target/run_results.json  docs_site/ 2>/dev/null || true
+          cp weather_data_dbt/target/index.html        docs_site/
+          cp weather_data_dbt/target/manifest.json     docs_site/
+          cp weather_data_dbt/target/catalog.json      docs_site/
+          cp weather_data_dbt/target/run_results.json  docs_site/ 2>/dev/null || true
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
