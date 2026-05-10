@@ -150,24 +150,19 @@ GitHub Actions ([`.github/workflows/bq_cd.yml`](../../.github/workflows/bq_cd.ym
 takes over after the one-time deploy: every push to `main` touching
 `infra/bq/**` rebuilds the image and rolls the Cloud Run Job.
 
-#### Cloud Scheduler trigger (one-time)
+#### Cloud Scheduler trigger
+
+After `scheduler-invoker@…` exists and has `roles/run.invoker` on
+`bronze-daily-load` (one-time setup in
+[`.github/workflows/README.md` §2c](../../.github/workflows/README.md#2c-scheduler-invoker-sa-scheduler-invoker)):
 
 ```bash
-REGION=asia-east1
-SCHEDULER_SA=scheduler-invoker@${PROJECT}.iam.gserviceaccount.com
-
-gcloud scheduler jobs create http bronze-daily-load-trigger \
-  --location="${REGION}" \
-  --schedule="0 2 * * *" --time-zone="Asia/Taipei" \
-  --uri="https://${REGION}-run.googleapis.com/v2/projects/${PROJECT}/locations/${REGION}/jobs/bronze-daily-load:run" \
-  --http-method=POST \
-  --oauth-service-account-email="${SCHEDULER_SA}"
-
-gcloud run jobs add-iam-policy-binding bronze-daily-load \
-  --region="${REGION}" \
-  --member="serviceAccount:${SCHEDULER_SA}" \
-  --role="roles/run.invoker"
+./deploy_scheduler.sh
 ```
+
+The script is idempotent (`describe` + branch to `create` / `update`),
+so re-running on schedule changes is safe. It registers the trigger
+`bronze-daily-load-trigger` with cron `0 2 * * *` Asia/Taipei.
 
 ### Local / ad-hoc / backfill: [`daily_load.sh`](daily_load.sh) wrapper
 
@@ -236,5 +231,6 @@ infra/bq/
 ├── daily_load.sh                      ← thin wrapper: invokes daily_load.sql via bq CLI
 ├── Dockerfile                         ← bronze-loader Cloud Run Job image (cloud-sdk:slim)
 ├── build_and_push.sh                  ← docker build + push to Artifact Registry
-└── deploy_jobs.sh                     ← gcloud run jobs deploy bronze-daily-load
+├── deploy_jobs.sh                     ← gcloud run jobs deploy bronze-daily-load
+└── deploy_scheduler.sh                ← gcloud scheduler jobs create/update for bronze trigger
 ```

@@ -38,7 +38,8 @@ infra/dbt/
 ├── .dockerignore             ← excludes target/, dbt_packages/, secrets, sibling repos
 ├── entrypoint.sh             ← dbt wrapper inside the container; honors DBT_TARGET
 ├── build_and_push.sh         ← docker build + push to Artifact Registry
-└── deploy_jobs.sh            ← gcloud run jobs deploy (creates or updates)
+├── deploy_jobs.sh            ← gcloud run jobs deploy (creates or updates)
+└── deploy_schedulers.sh      ← gcloud scheduler jobs create/update for both triggers
 ```
 
 ## Prerequisites
@@ -92,43 +93,23 @@ cd infra/dbt
 
 Idempotent — re-runs update existing Jobs in place.
 
-## Attach Cloud Scheduler triggers (one-time, Console)
+## Attach Cloud Scheduler triggers
 
-The Job definitions don't include their schedules. Add via gcloud or
-Console:
-
-```bash
-PROJECT=side-project-staging
-REGION=asia-east1
-SCHEDULER_SA=scheduler-invoker@${PROJECT}.iam.gserviceaccount.com
-
-# Weekly build at Monday 02:30 Asia/Taipei
-gcloud scheduler jobs create http dbt-weekly-build-trigger \
-  --location="${REGION}" \
-  --schedule="30 2 * * 1" --time-zone="Asia/Taipei" \
-  --uri="https://${REGION}-run.googleapis.com/v2/projects/${PROJECT}/locations/${REGION}/jobs/dbt-weekly-build:run" \
-  --http-method=POST \
-  --oauth-service-account-email="${SCHEDULER_SA}"
-
-# Hourly freshness at top of each hour
-gcloud scheduler jobs create http dbt-hourly-freshness-trigger \
-  --location="${REGION}" \
-  --schedule="0 * * * *" --time-zone="Asia/Taipei" \
-  --uri="https://${REGION}-run.googleapis.com/v2/projects/${PROJECT}/locations/${REGION}/jobs/dbt-hourly-freshness:run" \
-  --http-method=POST \
-  --oauth-service-account-email="${SCHEDULER_SA}"
-```
-
-The Scheduler SA needs `roles/run.invoker` on both Jobs:
+After `scheduler-invoker@…` exists and has `roles/run.invoker` on both
+Jobs (one-time setup in
+[`.github/workflows/README.md` §2c](../../.github/workflows/README.md#2c-scheduler-invoker-sa-scheduler-invoker)):
 
 ```bash
-for JOB in dbt-weekly-build dbt-hourly-freshness; do
-  gcloud run jobs add-iam-policy-binding "${JOB}" \
-    --region="${REGION}" \
-    --member="serviceAccount:${SCHEDULER_SA}" \
-    --role="roles/run.invoker"
-done
+./deploy_schedulers.sh
 ```
+
+The script is idempotent (`describe` + branch to `create` / `update`).
+It registers two triggers:
+
+| Trigger | Schedule (Asia/Taipei) | Target Cloud Run Job |
+|---|---|---|
+| `dbt-weekly-build-trigger` | `30 2 * * 1` (Mon 02:30) | `dbt-weekly-build` |
+| `dbt-hourly-freshness-trigger` | `0 * * * *` (top of every hour) | `dbt-hourly-freshness` |
 
 ## Test ad-hoc
 

@@ -177,10 +177,12 @@ post-hoc, conflating two separate concerns).
 | [`infra/dbt/entrypoint.sh`](infra/dbt/entrypoint.sh) | Forwards args to dbt with the configured target/profiles dir |
 | [`infra/dbt/build_and_push.sh`](infra/dbt/build_and_push.sh) | docker build + push to Artifact Registry |
 | [`infra/dbt/deploy_jobs.sh`](infra/dbt/deploy_jobs.sh) | gcloud run jobs deploy for `dbt-weekly-build` + `dbt-hourly-freshness` |
+| [`infra/dbt/deploy_schedulers.sh`](infra/dbt/deploy_schedulers.sh) | gcloud scheduler triggers for both dbt jobs (`30 2 * * 1` and `0 * * * *`) |
 | [`infra/dbt/README.md`](infra/dbt/README.md) | Operator runbook + Cloud Scheduler setup commands |
 | [`infra/bq/Dockerfile`](infra/bq/Dockerfile) | `bronze-loader` image (`gcr.io/google.com/cloudsdktool/cloud-sdk:slim`) baking `daily_load.sql` + `daily_load.sh` |
 | [`infra/bq/build_and_push.sh`](infra/bq/build_and_push.sh) | docker build + push for the bronze image (reuses the `dbt` AR repo) |
 | [`infra/bq/deploy_jobs.sh`](infra/bq/deploy_jobs.sh) | gcloud run jobs deploy for `bronze-daily-load` |
+| [`infra/bq/deploy_scheduler.sh`](infra/bq/deploy_scheduler.sh) | gcloud scheduler trigger for the bronze job (`0 2 * * *`) |
 
 The bronze daily MERGE moves from "BigQuery Scheduled Query (Console)" to
 the same Cloud Run Job pattern as dbt — auth via SA (no individual-user
@@ -278,10 +280,6 @@ Deferred to PR #4 (or later):
   are the only deployment surface for now. Future Terraform will use a
   GCS backend; the current SA / IAM artifacts created by the runbook are
   importable.
-- **Cloud Scheduler triggers** for the two Cloud Run Jobs. Documented in
-  [`infra/dbt/README.md`](infra/dbt/README.md) as gcloud commands; not
-  scripted because the schedule cadence may change once we have stg
-  telemetry.
 - **Failure alerting** (Slack / Discord webhooks for Cloud Run Job failures,
   freshness wrapper from §13.4.2, Cloud Monitoring alert policies from
   §13.9 P0).

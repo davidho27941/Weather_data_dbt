@@ -102,6 +102,38 @@ gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
   --role="roles/storage.objectViewer"
 ```
 
+### 2c. Scheduler-invoker SA (`scheduler-invoker@…`)
+
+Cloud Scheduler triggers HTTP-call the Cloud Run Job `:run` endpoints.
+Each call is OAuth-authenticated with this SA, which carries
+`roles/run.invoker` on the three jobs (`bronze-daily-load`,
+`dbt-weekly-build`, `dbt-hourly-freshness`).
+
+```bash
+PROJECT=side-project-staging
+SA_INVOKER=scheduler-invoker@${PROJECT}.iam.gserviceaccount.com
+
+gcloud iam service-accounts create scheduler-invoker \
+  --project="${PROJECT}" \
+  --display-name="Cloud Scheduler → Cloud Run Job invoker"
+
+for JOB in bronze-daily-load dbt-weekly-build dbt-hourly-freshness; do
+  gcloud run jobs add-iam-policy-binding "${JOB}" \
+    --project="${PROJECT}" \
+    --region=asia-east1 \
+    --member="serviceAccount:${SA_INVOKER}" \
+    --role="roles/run.invoker"
+done
+```
+
+After this, attach the actual Cloud Scheduler triggers via the per-layer
+deploy scripts:
+
+```bash
+./infra/bq/deploy_scheduler.sh         # bronze-daily-load   cron 0 2 * * *
+./infra/dbt/deploy_schedulers.sh       # dbt weekly + freshness
+```
+
 ### 3. CI service account (`gha-ci@…`)
 
 Used by `dbt_ci.yml` and `build_dbt_docs.yml`. Permissions kept minimal:
