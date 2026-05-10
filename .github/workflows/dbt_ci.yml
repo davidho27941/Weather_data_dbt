@@ -64,7 +64,11 @@ jobs:
           python-version: '3.11'
 
       - name: Install dbt-bigquery
-        run: pip install 'dbt-core>=1.8,<1.9' 'dbt-bigquery>=1.8,<1.9'
+        # Pin to the same minor as the local uv venv (1.11.x) so CI reads
+        # the package-lock.yml dbt produces locally. require-dbt-version in
+        # dbt_project.yml is the floor (>=1.8); the ceiling here is the
+        # ceiling of the local toolchain.
+        run: pip install 'dbt-core>=1.11,<1.12' 'dbt-bigquery>=1.11,<1.12'
 
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
