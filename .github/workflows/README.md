@@ -1,11 +1,12 @@
 # GitHub Actions setup
 
-Three workflows live here:
+Four workflows live here:
 
 | Workflow | Trigger | What it does |
 |---|---|---|
 | [`dbt_ci.yml`](dbt_ci.yml) | PRs touching `weather_data_dbt/**` or `infra/dbt/**` | `dbt deps` + `dbt parse` + `dbt build --target ci --full-refresh --vars '{ci_sample_days: 7}'` against `weather_ci_*` |
 | [`dbt_cd.yml`](dbt_cd.yml) | Push to `main` touching `weather_data_dbt/**` or `infra/dbt/**` | Build + push image to Artifact Registry, then `gcloud run jobs update` on `dbt-weekly-build` and `dbt-hourly-freshness` |
+| [`bq_cd.yml`](bq_cd.yml) | Push to `main` touching `infra/bq/**` | Build + push the `bronze-loader` image, then `gcloud run jobs update` on `bronze-daily-load` |
 | [`build_dbt_docs.yml`](build_dbt_docs.yml) | Push to `main` touching `weather_data_dbt/**` | `dbt docs generate` + publish to GitHub Pages |
 
 ## One-time GCP setup
@@ -50,17 +51,55 @@ gcloud projects add-iam-policy-binding "${PROJECT}" \
 #   for DS in staging intermediate marts; do
 #     bq mk --location=asia-east1 --dataset "${PROJECT}:weather_${DS}"
 #   done
+# Dataset-level grants via SQL DCL. `bq add-iam-policy-binding` would
+# require allowlisting on the project; GRANT does not.
 for DS in weather_staging weather_intermediate weather_marts; do
-  bq add-iam-policy-binding \
-    --member="serviceAccount:${SA_RUNNER}" \
-    --role="roles/bigquery.dataEditor" \
-    "${PROJECT}:${DS}"
+  bq query --use_legacy_sql=false --location=asia-east1 "
+GRANT \`roles/bigquery.dataEditor\`
+ON SCHEMA \`${PROJECT}.${DS}\`
+TO 'serviceAccount:${SA_RUNNER}'
+"
 done
 
-bq add-iam-policy-binding \
-  --member="serviceAccount:${SA_RUNNER}" \
-  --role="roles/bigquery.dataViewer" \
-  "${PROJECT}:weather_raw"
+bq query --use_legacy_sql=false --location=asia-east1 "
+GRANT \`roles/bigquery.dataViewer\`
+ON SCHEMA \`${PROJECT}.weather_raw\`
+TO 'serviceAccount:${SA_RUNNER}'
+"
+```
+
+### 2b. Bronze runtime SA (`bronze-loader@…`)
+
+Runtime SA for the `bronze-daily-load` Cloud Run Job. Permissions are
+disjoint from `dbt-runner@…` — bronze writes to `weather_raw` and reads
+from GCS, dbt writes to `weather_{staging,intermediate,marts}` and reads
+`weather_raw`. Setup steps mirror §2 (also documented in
+[`../../infra/bq/README.md`](../../infra/bq/README.md)):
+
+```bash
+PROJECT=side-project-staging
+SA_BRONZE=bronze-loader@${PROJECT}.iam.gserviceaccount.com
+BUCKET=side-project-weather-data
+
+gcloud iam service-accounts create bronze-loader \
+  --project="${PROJECT}" \
+  --display-name="bronze daily-load Cloud Run Job runtime"
+
+gcloud projects add-iam-policy-binding "${PROJECT}" \
+  --member="serviceAccount:${SA_BRONZE}" \
+  --role="roles/bigquery.user"
+
+# Dataset-level grant via SQL DCL. `bq add-iam-policy-binding` would also
+# work in theory but requires allowlisting on the project — GRANT does not.
+bq query --use_legacy_sql=false --location=asia-east1 "
+GRANT \`roles/bigquery.dataEditor\`
+ON SCHEMA \`${PROJECT}.weather_raw\`
+TO 'serviceAccount:${SA_BRONZE}'
+"
+
+gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
+  --member="serviceAccount:${SA_BRONZE}" \
+  --role="roles/storage.objectViewer"
 ```
 
 ### 3. CI service account (`gha-ci@…`)
@@ -106,25 +145,30 @@ Delete the local copy after.
 
 ### 4. CD service account (`gha-cd@…`)
 
-Used by `dbt_cd.yml`. Needs to push images and roll Cloud Run Jobs:
+Used by both `dbt_cd.yml` and `bq_cd.yml`. Needs to push images and roll
+all three Cloud Run Jobs:
 
-> **Prerequisite**: §2 must have run (so `dbt-runner@…` exists for the
-> `iam.serviceAccountUser` binding below), and the two Cloud Run Jobs
-> must already exist before `dbt_cd.yml` runs — `gcloud run jobs update`
-> only changes the image tag in place. Run
-> [`../../infra/dbt/deploy_jobs.sh`](../../infra/dbt/deploy_jobs.sh) once
+> **Prerequisite**: §2 + §2b must have run (so `dbt-runner@…` and
+> `bronze-loader@…` exist for the `iam.serviceAccountUser` bindings
+> below), and the three Cloud Run Jobs must already exist before the CD
+> workflows run — `gcloud run jobs update` only changes the image tag in
+> place. Run
+> [`../../infra/dbt/deploy_jobs.sh`](../../infra/dbt/deploy_jobs.sh) and
+> [`../../infra/bq/deploy_jobs.sh`](../../infra/bq/deploy_jobs.sh) once
 > from a workstation to create them.
 
 
 ```bash
 SA_CD=gha-cd@${PROJECT}.iam.gserviceaccount.com
-SA_RUNNER=dbt-runner@${PROJECT}.iam.gserviceaccount.com
+SA_DBT_RUNNER=dbt-runner@${PROJECT}.iam.gserviceaccount.com
+SA_BRONZE=bronze-loader@${PROJECT}.iam.gserviceaccount.com
 
 gcloud iam service-accounts create gha-cd \
   --project="${PROJECT}" \
-  --display-name="GitHub Actions dbt CD"
+  --display-name="GitHub Actions CD (dbt + bronze)"
 
-# Push to Artifact Registry.
+# Push to Artifact Registry (single repo `dbt` holds both dbt-weather and
+# bronze-loader images).
 gcloud artifacts repositories add-iam-policy-binding dbt \
   --location=asia-east1 \
   --project="${PROJECT}" \
@@ -136,10 +180,12 @@ gcloud projects add-iam-policy-binding "${PROJECT}" \
   --member="serviceAccount:${SA_CD}" \
   --role="roles/run.developer"
 
-# Allow CD to "act as" the runtime SA when updating jobs.
-gcloud iam service-accounts add-iam-policy-binding "${SA_RUNNER}" \
-  --member="serviceAccount:${SA_CD}" \
-  --role="roles/iam.serviceAccountUser"
+# Allow CD to "act as" both runtime SAs when updating jobs.
+for SA in "${SA_DBT_RUNNER}" "${SA_BRONZE}"; do
+  gcloud iam service-accounts add-iam-policy-binding "${SA}" \
+    --member="serviceAccount:${SA_CD}" \
+    --role="roles/iam.serviceAccountUser"
+done
 ```
 
 Generate key, add as repo secret `GCP_SA_KEY_CD`:
@@ -156,7 +202,7 @@ gcloud iam service-accounts keys create gha-cd-key.json \
 | Name | Used by | Value |
 |---|---|---|
 | `GCP_SA_KEY_CI` | `dbt_ci.yml`, `build_dbt_docs.yml` | JSON key contents for `gha-ci@…` |
-| `GCP_SA_KEY_CD` | `dbt_cd.yml` | JSON key contents for `gha-cd@…` |
+| `GCP_SA_KEY_CD` | `dbt_cd.yml`, `bq_cd.yml` | JSON key contents for `gha-cd@…` |
 
 
 -----

@@ -73,25 +73,101 @@ multi-statement BigQuery script that does `LOAD DATA OVERWRITE` →
 `MERGE` → `DROP TABLE`. The SQL is the canonical source of truth; how it gets
 invoked depends on environment.
 
-### Production: BigQuery Scheduled Query (recommended)
+### Production: Cloud Run Job `bronze-daily-load`
 
-Deploy `daily_load.sql` as a BigQuery Scheduled Query. No Cloud Run Job, no
-Cloud Function, no compute layer — BigQuery's own scheduler runs the SQL
-directly.
+Deploy `daily_load.sql` as a Cloud Run Job triggered by Cloud Scheduler at
+`0 2 * * *` Asia/Taipei. The Job's container image bakes in
+`daily_load.sql` + `daily_load.sh`; the entrypoint runs the shell wrapper,
+which invokes `bq query` with the SQL.
 
-Setup outline (full doc in `daily_load.sql` header):
+Why Cloud Run Job and not BigQuery Scheduled Query — schedule definition
+lives in code (deploy via gcloud / GHA, not Console clicks); auth is bound
+to a dedicated SA (not the user who created the schedule); failures and
+logs land in Cloud Logging / Cloud Monitoring alongside the dbt jobs.
 
-1. BQ Console → Scheduled Queries → Create Scheduled Query
-2. Paste the contents of `daily_load.sql`
-3. Schedule: cron `0 2 * * *`, time-zone `Asia/Taipei`
-4. Parameter: `target_date` of type `STRING`, value `''` (empty) → SQL falls
-   through to its default (yesterday in Asia/Taipei)
-5. Service account: one with `bigquery.dataEditor` on `weather_raw` and
-   `storage.objectViewer` on the GCS bucket
-6. Save.
+#### One-time setup
 
-Failure notifications can be configured in the schedule (email) or wired
-through Pub/Sub for Slack / Discord delivery.
+Service account `bronze-loader@${PROJECT}.iam.gserviceaccount.com` with:
+
+- `roles/bigquery.user` on the project (run queries)
+- `roles/bigquery.dataEditor` on the `weather_raw` dataset (write bronze)
+- `roles/storage.objectViewer` on the GCS source bucket (read crawler JSON)
+
+```bash
+PROJECT=side-project-staging
+SA=bronze-loader@${PROJECT}.iam.gserviceaccount.com
+BUCKET=side-project-weather-data
+
+gcloud iam service-accounts create bronze-loader \
+  --project="${PROJECT}" \
+  --display-name="bronze daily-load Cloud Run Job runtime"
+
+gcloud projects add-iam-policy-binding "${PROJECT}" \
+  --member="serviceAccount:${SA}" --role="roles/bigquery.user"
+
+# Dataset-level grant via SQL DCL. `bq add-iam-policy-binding` would
+# also work in theory but requires allowlisting on the project; GRANT
+# does not.
+bq query --use_legacy_sql=false --location=asia-east1 "
+GRANT \`roles/bigquery.dataEditor\`
+ON SCHEMA \`${PROJECT}.weather_raw\`
+TO 'serviceAccount:${SA}'
+"
+
+gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
+  --member="serviceAccount:${SA}" --role="roles/storage.objectViewer"
+```
+
+#### Build, push, deploy
+
+One-time docker auth helper (so `docker push` can talk to Artifact Registry):
+
+```bash
+gcloud auth configure-docker asia-east1-docker.pkg.dev
+```
+
+Your individual gcloud account also needs `roles/artifactregistry.writer`
+on the `dbt` repo if you intend to push from a workstation (GHA uses
+`gha-cd@…` separately):
+
+```bash
+gcloud artifacts repositories add-iam-policy-binding dbt \
+  --location=asia-east1 \
+  --project=side-project-staging \
+  --member="user:$(gcloud config get-value account)" \
+  --role="roles/artifactregistry.writer"
+```
+
+Then build + deploy:
+
+```bash
+cd infra/bq
+./build_and_push.sh                # builds + pushes bronze-loader:$SHA (linux/amd64)
+./deploy_jobs.sh                   # creates / updates the Cloud Run Job
+```
+
+GitHub Actions ([`.github/workflows/bq_cd.yml`](../../.github/workflows/bq_cd.yml))
+takes over after the one-time deploy: every push to `main` touching
+`infra/bq/**` rebuilds the image and rolls the Cloud Run Job.
+
+#### Cloud Scheduler trigger (one-time)
+
+```bash
+REGION=asia-east1
+SCHEDULER_SA=scheduler-invoker@${PROJECT}.iam.gserviceaccount.com
+
+gcloud scheduler jobs create http bronze-daily-load-trigger \
+  --location="${REGION}" \
+  --schedule="0 2 * * *" --time-zone="Asia/Taipei" \
+  --uri="https://${REGION}-run.googleapis.com/v2/projects/${PROJECT}/locations/${REGION}/jobs/bronze-daily-load:run" \
+  --http-method=POST \
+  --oauth-service-account-email="${SCHEDULER_SA}"
+
+gcloud run jobs add-iam-policy-binding bronze-daily-load \
+  --region="${REGION}" \
+  --member="serviceAccount:${SCHEDULER_SA}" \
+  --role="roles/run.invoker"
+```
 
 ### Local / ad-hoc / backfill: [`daily_load.sh`](daily_load.sh) wrapper
 
@@ -156,6 +232,9 @@ infra/bq/
 ├── 03_create_stations.sh              ← 2 station tables (weather_stations + rain_fall_stations)
 ├── 04_drop_staging.sh                 ← drop *_staging tables (incl. legacy)
 ├── verify.sh                          ← sanity-check queries (incl. ingest_source split)
-├── daily_load.sql                     ← canonical daily-load SQL (deploy as BQ Scheduled Query)
-└── daily_load.sh                      ← thin wrapper: invokes daily_load.sql via bq CLI
+├── daily_load.sql                     ← canonical daily-load SQL (multi-statement bq script)
+├── daily_load.sh                      ← thin wrapper: invokes daily_load.sql via bq CLI
+├── Dockerfile                         ← bronze-loader Cloud Run Job image (cloud-sdk:slim)
+├── build_and_push.sh                  ← docker build + push to Artifact Registry
+└── deploy_jobs.sh                     ← gcloud run jobs deploy bronze-daily-load
 ```

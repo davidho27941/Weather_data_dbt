@@ -168,16 +168,26 @@ post-hoc, conflating two separate concerns).
   CTAS in `infra/bq/02_create_observations.sh` already classifies). dbt
   staging does not re-compute.
 
-### Orchestration: `infra/dbt/`
+### Orchestration: `infra/dbt/` + `infra/bq/`
 
 | File | Purpose |
 |---|---|
-| [`Dockerfile`](infra/dbt/Dockerfile) | dbt-bigquery image with project + deps baked in; entrypoint honors `DBT_TARGET` |
-| [`.dockerignore`](infra/dbt/.dockerignore) | Excludes secrets, build artifacts, sibling repos |
-| [`entrypoint.sh`](infra/dbt/entrypoint.sh) | Forwards args to dbt with the configured target/profiles dir |
-| [`build_and_push.sh`](infra/dbt/build_and_push.sh) | docker build + push to Artifact Registry |
-| [`deploy_jobs.sh`](infra/dbt/deploy_jobs.sh) | gcloud run jobs deploy for `dbt-weekly-build` + `dbt-hourly-freshness` |
-| [`README.md`](infra/dbt/README.md) | Operator runbook + Cloud Scheduler setup commands |
+| [`infra/dbt/Dockerfile`](infra/dbt/Dockerfile) | dbt-bigquery image with project + deps baked in; entrypoint honors `DBT_TARGET` |
+| [`infra/dbt/.dockerignore`](infra/dbt/.dockerignore) | Excludes secrets, build artifacts, sibling repos |
+| [`infra/dbt/entrypoint.sh`](infra/dbt/entrypoint.sh) | Forwards args to dbt with the configured target/profiles dir |
+| [`infra/dbt/build_and_push.sh`](infra/dbt/build_and_push.sh) | docker build + push to Artifact Registry |
+| [`infra/dbt/deploy_jobs.sh`](infra/dbt/deploy_jobs.sh) | gcloud run jobs deploy for `dbt-weekly-build` + `dbt-hourly-freshness` |
+| [`infra/dbt/README.md`](infra/dbt/README.md) | Operator runbook + Cloud Scheduler setup commands |
+| [`infra/bq/Dockerfile`](infra/bq/Dockerfile) | `bronze-loader` image (`gcr.io/google.com/cloudsdktool/cloud-sdk:slim`) baking `daily_load.sql` + `daily_load.sh` |
+| [`infra/bq/build_and_push.sh`](infra/bq/build_and_push.sh) | docker build + push for the bronze image (reuses the `dbt` AR repo) |
+| [`infra/bq/deploy_jobs.sh`](infra/bq/deploy_jobs.sh) | gcloud run jobs deploy for `bronze-daily-load` |
+
+The bronze daily MERGE moves from "BigQuery Scheduled Query (Console)" to
+the same Cloud Run Job pattern as dbt — auth via SA (no individual-user
+ownership), schedule definition in code (not Console clicks), and
+observability via Cloud Logging / Cloud Monitoring alongside the dbt
+jobs. See [`infra/bq/README.md`](infra/bq/README.md) for setup and
+runbook.
 
 ### CI/CD: `.github/workflows/`
 
@@ -185,6 +195,7 @@ post-hoc, conflating two separate concerns).
 |---|---|---|
 | [`dbt_ci.yml`](.github/workflows/dbt_ci.yml) | PRs touching `weather_data_dbt/**` or `infra/dbt/**` | `dbt deps` + `dbt parse` + `dbt build --target ci --full-refresh --vars '{ci_sample_days: 7}'` against an isolated `weather_ci_*` dataset; runs all data tests as part of `build` |
 | [`dbt_cd.yml`](.github/workflows/dbt_cd.yml) | Push to `main` touching `weather_data_dbt/**` or `infra/dbt/**` | Build + push the dbt-weather image to Artifact Registry under `${SHA}` and `latest` tags, then `gcloud run jobs update` to roll both Cloud Run Jobs onto the new image |
+| [`bq_cd.yml`](.github/workflows/bq_cd.yml) | Push to `main` touching `infra/bq/**` | Build + push the `bronze-loader` image, then `gcloud run jobs update` on `bronze-daily-load` |
 | [`build_dbt_docs.yml`](.github/workflows/build_dbt_docs.yml) | Push to `main` touching `weather_data_dbt/**` | Replaces the Snowflake-era docs workflow. `dbt docs generate --target ci` + publish to GitHub Pages |
 | [`README.md`](.github/workflows/README.md) | — | One-time GCP setup (CI / CD service accounts, Artifact Registry repo, GitHub secrets/variables) and migration path to Workload Identity Federation |
 
@@ -254,6 +265,8 @@ CI/CD (one-time setup per `.github/workflows/README.md`, then per-event):
 - [ ] Merge to `main` and confirm `dbt CD` pushes a fresh image and
   rolls both Cloud Run Jobs (`gcloud run jobs describe dbt-weekly-build
   --region=asia-east1` shows the new digest).
+- [ ] Touch `infra/bq/` and confirm `bronze CD` rolls the
+  `bronze-daily-load` job onto the new digest.
 - [ ] Confirm `dbt docs` workflow publishes to Pages.
 
 ## What is NOT in this PR
@@ -269,8 +282,6 @@ Deferred to PR #4 (or later):
   [`infra/dbt/README.md`](infra/dbt/README.md) as gcloud commands; not
   scripted because the schedule cadence may change once we have stg
   telemetry.
-- **BigQuery Scheduled Query** setup for `infra/bq/daily_load.sql`. That
-  needs Console-based config and is independent of dbt orchestration.
 - **Failure alerting** (Slack / Discord webhooks for Cloud Run Job failures,
   freshness wrapper from §13.4.2, Cloud Monitoring alert policies from
   §13.9 P0).

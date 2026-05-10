@@ -1,0 +1,116 @@
+name: bronze CD
+
+# On every push to main that touches the bronze layer (infra/bq/**), or
+# this workflow itself:
+#   1. Build the bronze-loader Docker image (infra/bq/Dockerfile).
+#   2. Push to Artifact Registry under two tags:
+#        ${REGION}-docker.pkg.dev/${PROJECT}/dbt/bronze-loader:${SHA}
+#        ${REGION}-docker.pkg.dev/${PROJECT}/dbt/bronze-loader:latest
+#   3. Roll the bronze-daily-load Cloud Run Job onto the new image.
+#
+# The Cloud Run Job definition itself (CPU / memory / timeout / SA) lives
+# in infra/bq/deploy_jobs.sh and is NOT redeployed here — only the image
+# tag rolls forward. Re-run deploy_jobs.sh from a workstation when those
+# settings change.
+#
+# Reuses the same gha-cd@... service account as dbt_cd.yml (same AR repo
+# `dbt`, same `roles/run.developer` scope on the project, same act-as on
+# the runtime SA — see .github/workflows/README.md).
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'infra/bq/**'
+      - '.github/workflows/bq_cd.yml'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to build/push/roll (defaults to git SHA)'
+        required: false
+        default: ''
+
+concurrency:
+  group: bq-cd-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # reserved for future WIF migration
+
+env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'side-project-staging' }}
+  BQ_LOCATION: ${{ vars.BQ_LOCATION || 'asia-east1' }}
+  AR_REPO: ${{ vars.AR_REPO || 'dbt' }}
+
+jobs:
+  build_push_roll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve image tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY_CD }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${BQ_LOCATION}-docker.pkg.dev" --quiet
+
+      - name: Build image
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          IMAGE="${BQ_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/bronze-loader"
+          docker build \
+            -t "${IMAGE}:${TAG}" \
+            -t "${IMAGE}:latest" \
+            -f infra/bq/Dockerfile \
+            infra/bq/
+
+      - name: Push image (sha + latest)
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          IMAGE="${BQ_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/bronze-loader"
+          docker push "${IMAGE}:${TAG}"
+          docker push "${IMAGE}:latest"
+
+      - name: Roll Cloud Run Job onto new image
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          IMAGE="${BQ_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/bronze-loader:${TAG}"
+          echo "==> updating bronze-daily-load → ${IMAGE}"
+          gcloud run jobs update bronze-daily-load \
+            --project="${GCP_PROJECT_ID}" \
+            --region="${BQ_LOCATION}" \
+            --image="${IMAGE}"
+
+      - name: Summary
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          {
+            echo "## bronze CD"
+            echo
+            echo "- image tag: \`${TAG}\`"
+            echo "- pushed to: \`${BQ_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/bronze-loader\`"
+            echo "- updated job: \`bronze-daily-load\`"
+          } >> "$GITHUB_STEP_SUMMARY"

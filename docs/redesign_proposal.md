@@ -1592,7 +1592,13 @@ FROM latest;
 
 ### 14.7 持續性 ingestion：每日 Cloud Run Job
 
-`infra/dbt/daily_load.sh`（在 Cloud Run Job 裡跑，搭 §13 排程）：
+> **實作落地**：原始設計於本節提出 Cloud Run Job；中途曾考慮以 BigQuery Scheduled Query 簡化部署，
+> 最終回到 Cloud Run Job 路線。實際成品見 [`infra/bq/Dockerfile`](../infra/bq/Dockerfile)、
+> [`infra/bq/deploy_jobs.sh`](../infra/bq/deploy_jobs.sh)、[`infra/bq/daily_load.sh`](../infra/bq/daily_load.sh)
+> 與 GHA 自動化 [`.github/workflows/bq_cd.yml`](../.github/workflows/bq_cd.yml)。
+> Job 名稱為 `bronze-daily-load`，runtime SA 為 `bronze-loader@…`。
+
+`infra/bq/daily_load.sh`（在 Cloud Run Job 裡跑，搭 §13 排程）：
 
 ```bash
 #!/usr/bin/env bash

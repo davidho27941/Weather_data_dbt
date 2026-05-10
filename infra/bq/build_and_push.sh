@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build the dbt-weather Docker image and push to Artifact Registry.
+# Build the bronze-loader Docker image and push to Artifact Registry.
 #
 # Usage:
 #   ./build_and_push.sh [TAG]
@@ -9,7 +9,7 @@
 #   TAG          $(git rev-parse --short HEAD) at the time of run
 #   PROJECT      side-project-staging
 #   REGION       asia-east1
-#   AR_REPO      dbt
+#   AR_REPO      dbt        (reused — same repo as the dbt Cloud Run Job images)
 #
 set -euo pipefail
 
@@ -18,18 +18,17 @@ PROJECT="${GCP_PROJECT_ID:-side-project-staging}"
 REGION="${BQ_LOCATION:-asia-east1}"
 AR_REPO="${AR_REPO:-dbt}"
 
-IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO}/dbt-weather:${TAG}"
+IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO}/bronze-loader:${TAG}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 echo "==> Building ${IMAGE}"
-echo "    repo root: ${REPO_ROOT}"
+echo "    context: ${SCRIPT_DIR}"
 
 docker build \
   --platform=linux/amd64 \
   -t "${IMAGE}" \
   -f "${SCRIPT_DIR}/Dockerfile" \
-  "${REPO_ROOT}"
+  "${SCRIPT_DIR}"
 
 echo "==> Pushing ${IMAGE}"
 docker push "${IMAGE}"
@@ -37,6 +36,5 @@ docker push "${IMAGE}"
 echo
 echo "Image pushed: ${IMAGE}"
 echo
-echo "To update the Cloud Run Jobs to use this image, run:"
-echo "  gcloud run jobs update dbt-weekly-build       --region=${REGION} --image=${IMAGE}"
-echo "  gcloud run jobs update dbt-hourly-freshness  --region=${REGION} --image=${IMAGE}"
+echo "To update the Cloud Run Job to use this image, run:"
+echo "  gcloud run jobs update bronze-daily-load --region=${REGION} --image=${IMAGE}"

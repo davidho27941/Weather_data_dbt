@@ -51,6 +51,21 @@ infra/dbt/
     --location=asia-east1 \
     --project=side-project-staging
   ```
+- One-time docker auth helper for AR (writes credentials helper into
+  `~/.docker/config.json`):
+  ```bash
+  gcloud auth configure-docker asia-east1-docker.pkg.dev
+  ```
+- Your individual gcloud account needs `roles/artifactregistry.writer` on
+  the `dbt` repo if you intend to `build_and_push.sh` from a workstation
+  (the GHA workflows use `gha-cd@…` instead):
+  ```bash
+  gcloud artifacts repositories add-iam-policy-binding dbt \
+    --location=asia-east1 \
+    --project=side-project-staging \
+    --member="user:$(gcloud config get-value account)" \
+    --role="roles/artifactregistry.writer"
+  ```
 - Service account `dbt-runner@${PROJECT}.iam.gserviceaccount.com` with:
   - `roles/bigquery.user` on the project
   - `roles/bigquery.dataEditor` on `weather_staging`, `weather_intermediate`,
