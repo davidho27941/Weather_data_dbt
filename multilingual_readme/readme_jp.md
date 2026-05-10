@@ -30,7 +30,7 @@
                               │  weather_*  │
                               └──────┬──────┘
                                      │ 一括ロード（初回）
-                                     │ + 日次 MERGE（Scheduled Query）
+                                     │ + 日次 MERGE（Cloud Run Job, 毎日 02:00）
                                      ▼
                           ┌────────────────────┐
                           │  BigQuery bronze   │
@@ -50,6 +50,11 @@
               └────────────────────────────────────────────────┘
 ```
 
+3 つの Cloud Run Job（`bronze-daily-load`、`dbt-weekly-build`、
+`dbt-hourly-freshness`）のいずれかがリトライ後も最終的に失敗した場合、
+単一の Cloud Monitoring アラートポリシー → email 通知チャンネルが
+発火します。
+
 3 つの時間粒度のロールアップ（10 分 / 時 / 日 / 週 / 月）が下流の ML 学習に
 供給され、`dim_stations` はすべての fact テーブルに JOIN されます。
 センチネル値（`'X'`、`'T'`、`'-99'`、`'-98'`、`'990'`）を含む測定値
@@ -65,9 +70,10 @@ ML パイプラインがそれぞれ必要なカラムを選択できます。
 | パス | 役割 |
 |---|---|
 | [`weather-crawler/`](../weather-crawler/) | CWA API を取得し JSON を GCS に書き込む FastAPI サービス（Cloud Run） |
-| [`infra/bq/`](../infra/bq/) | Bronze 層：スキーマファイル + 一括ロードと日次 MERGE のシェルスクリプト |
+| [`infra/bq/`](../infra/bq/) | Bronze 層：スキーマファイル、一括ロードスクリプト、`bronze-daily-load` Cloud Run Job（Dockerfile + deploy + scheduler スクリプト） |
 | [`weather_data_dbt/`](../weather_data_dbt/) | dbt プロジェクト（BigQuery プロファイル、dev / stg / prod / ci ターゲット） |
-| [`infra/dbt/`](../infra/dbt/) | 2 つの Cloud Run Job（`dbt-weekly-build`、`dbt-hourly-freshness`）用の Dockerfile + スクリプト |
+| [`infra/dbt/`](../infra/dbt/) | 2 つの Cloud Run Job（`dbt-weekly-build`、`dbt-hourly-freshness`）用の Dockerfile + スクリプト + Cloud Scheduler トリガー |
+| [`infra/monitoring/`](../infra/monitoring/) | Cloud Run Job 実行失敗を検知する Cloud Monitoring email アラートポリシー |
 | [`.github/workflows/`](../.github/workflows/) | GitHub Actions：CI（PR 検証）+ CD（イメージ push、Cloud Run Job ロールアウト）+ dbt docs 公開 |
 | [`docs/`](../docs/) | `redesign_proposal.md`（設計ドキュメント）と `pr_desc.md`（最新 PR 説明） |
 | `dags/`、ルートの `Dockerfile` | **レガシー** v1 Airflow + Snowflake 用。現在は配線されておらず、後続のクリーンアップ PR で削除予定。 |
@@ -80,7 +86,8 @@ ML パイプラインがそれぞれ必要なカラムを選択できます。
 | オブジェクトストレージ | GCS（`gs://${GCS_BUCKET}/`、`dt=YYYY-MM-DD` で hive パーティション） |
 | データウェアハウス | BigQuery（`asia-east1`、`side-project-staging` / 将来的に `side-project-prod`） |
 | 変換 | `dbt-core` 1.11.x · `dbt-bigquery` 1.11.x · `dbt_utils` 1.3.x |
-| オーケストレーション | Cloud Run Jobs + Cloud Scheduler（bronze MERGE は BQ Scheduled Query） |
+| オーケストレーション | 3 つの Cloud Run Job + Cloud Scheduler トリガー：`bronze-daily-load`（`0 2 * * *`）、`dbt-weekly-build`（`30 2 * * 1`）、`dbt-hourly-freshness`（`0 * * * *`） |
+| アラート | 上記 3 ジョブの `run.googleapis.com/job/completed_execution_count{result=failed}` を監視する Cloud Monitoring email アラートポリシー |
 | CI/CD | GitHub Actions（サービスアカウント JSON キー認証；WIF への移行手順をドキュメント化済み） |
 
 ## 環境
@@ -91,7 +98,7 @@ ML パイプラインがそれぞれ必要なカラムを選択できます。
 |---|---|---|
 | `dev` | ローカル開発（`gcloud auth application-default login`） | `weather_dev_{staging,intermediate,marts}` |
 | `ci` | GitHub Actions による PR 検証 | `weather_ci_{staging,intermediate,marts}`（毎回再構築、bronze の直近 7 日分のサブサンプル） |
-| `stg` | 日次 Cloud Run Job（現在の真実の単一情報源） | `weather_{staging,intermediate,marts}` |
+| `stg` | 週次 Cloud Run Job、毎週月曜 02:30 Asia/Taipei（現在の真実の単一情報源） | `weather_{staging,intermediate,marts}` |
 | `prod` | `side-project-prod` 立ち上げ後に予約済み | （同じデータセット名、別プロジェクト） |
 
 ルーティングはカスタム
@@ -126,18 +133,20 @@ dbt ドキュメントは `main` への push のたびに GitHub Pages へ自動
 - **v1（廃止）**：Airflow 2.9 + AWS S3 + Snowflake。ソースは
   [`dags/`](../dags/) と Airflow ベースのルート `Dockerfile` 配下。
   [`images/jp/`](../images/jp/) のダイアグラムはこの構成を反映しています。
-- **v2（現行）**：GCP ネイティブ。Bronze は PR #2 で導入、BigQuery 向け
-  dbt 書き換え + Cloud Run Jobs + GHA CI/CD は PR #3 で導入。
+- **v2（現行）**：GCP ネイティブ。
+  - PR #2 — BigQuery に bronze 層（`weather_raw.*`）を導入。一括ロード + 日次 MERGE。
+  - PR #3 — BigQuery 向け dbt 書き換え、3 つの Cloud Run Job（bronze daily / dbt weekly / dbt freshness hourly）+ Cloud Scheduler トリガー、GHA CI/CD。
+  - PR #4 — Cloud Run Job 実行失敗を検知する Cloud Monitoring email アラート。
 
 ## 今後の作業
 
-[`docs/pr_desc.md`](../docs/pr_desc.md) の「What is NOT in this PR」で
-追跡されています：
-
-- SA / IAM / Artifact Registry / Cloud Run Jobs / Scheduler の Terraform 化
-- Cloud Scheduler トリガー（現状は [`infra/dbt/README.md`](../infra/dbt/README.md)
-  に gcloud コマンドとして記載）
-- `infra/bq/daily_load.sql` 用の BQ Scheduled Query の設定
-- 障害アラート（freshness wrapper + Cloud Monitoring + Discord/Slack webhook）
-- GitHub Actions の Workload Identity Federation 移行
-- レガシーな Airflow / Snowflake 関連成果物の削除
+- **Terraform** 化：SA / IAM / Artifact Registry / Cloud Run Jobs / Scheduler / monitoring policy（現状は全てシェルスクリプト経由で作成）。
+- **Webhook 通知チャンネル**（Discord / Slack / Pub-Sub）+ **freshness wrapper** で source ごとの詳細を構造化送信。Email チャンネルは粒度の細かい freshness ペイロードを表示できない。
+- **Cloud Monitoring ダッシュボード**：パイプライン健全性可視化（Job 実行時間、BQ slot 消費、GCS オブジェクトの古さなど）。
+- **BQ データ品質モニタリング**（dbt artifacts に
+  [`elementary-data`](https://github.com/elementary-data/elementary)
+  を被せるなど）。
+- **Workload Identity Federation** で GitHub Actions の SA キー
+  シークレット 2 本を置き換える。
+- **レガシーな Airflow / Snowflake 関連成果物の削除**（`dags/`、ルート
+  `Dockerfile`、古いイメージ参照など）。
