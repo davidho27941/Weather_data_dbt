@@ -10,8 +10,8 @@ GCP-native architecture (GCS + BigQuery + dbt + Cloud Run).
 ## Architecture
 
 ```
-                ┌──────────────┐  every 10 min  ┌─────────────┐
-   CWA APIs ───▶│ weather-     │ ──────────────▶│  GCS bucket │
+                ┌──────────────┐  every 10 min   ┌─────────────┐
+   CWA APIs ───▶│ weather-     │ ──────────────▶ │  GCS bucket │
                 │ crawler      │   JSON files    │  weather_*  │
                 │ (Cloud Run)  │                 └──────┬──────┘
                 └──────────────┘                        │
