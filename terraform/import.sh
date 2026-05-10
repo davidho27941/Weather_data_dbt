@@ -56,17 +56,23 @@ run_import \
 
 # --- project-level IAM bindings ------------------------------------------
 # google_project_iam_member ID format: "{project} {role} {member}"
+# Bash 3.2 (macOS default) lacks associative arrays — use parallel
+# pipe-delimited entries instead.
 
-declare -A PROJECT_BINDINGS=(
-  ["dbt_runner_bq_user"]="roles/bigquery.user serviceAccount:dbt-runner@${PROJECT}.iam.gserviceaccount.com"
-  ["bronze_loader_bq_user"]="roles/bigquery.user serviceAccount:bronze-loader@${PROJECT}.iam.gserviceaccount.com"
-  ["gha_ci_bq_user"]="roles/bigquery.user serviceAccount:gha-ci@${PROJECT}.iam.gserviceaccount.com"
-  ["gha_cd_run_developer"]="roles/run.developer serviceAccount:gha-cd@${PROJECT}.iam.gserviceaccount.com"
+PROJECT_BINDINGS=(
+  "dbt_runner_bq_user|roles/bigquery.user|dbt-runner"
+  "bronze_loader_bq_user|roles/bigquery.user|bronze-loader"
+  "gha_ci_bq_user|roles/bigquery.user|gha-ci"
+  "gha_cd_run_developer|roles/run.developer|gha-cd"
 )
-for KEY in "${!PROJECT_BINDINGS[@]}"; do
+for ENTRY in "${PROJECT_BINDINGS[@]}"; do
+  KEY="${ENTRY%%|*}"
+  REST="${ENTRY#*|}"
+  ROLE="${REST%%|*}"
+  SA="${REST#*|}"
   run_import \
     "google_project_iam_member.project_bindings[\"${KEY}\"]" \
-    "${PROJECT} ${PROJECT_BINDINGS[$KEY]}"
+    "${PROJECT} ${ROLE} serviceAccount:${SA}@${PROJECT}.iam.gserviceaccount.com"
 done
 
 # --- AR repo IAM ---------------------------------------------------------

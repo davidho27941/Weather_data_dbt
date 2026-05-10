@@ -1,34 +1,31 @@
 # ---------------------------------------------------------------------------
 # Project-level role grants.
 #
-# google_project_iam_member is per-(project, role, member) — additive, does
-# not touch other principals on the same role. Safer than google_project_iam_binding
-# (which would clobber everyone else holding that role).
+# Members are constructed as plain strings rather than `google_service_account.sas[X].email`
+# references — `terraform import` evaluates dependent expressions per
+# imported instance, and during early imports the SA collection only
+# carries the one key being imported, so cross-key references error out.
+# Hardcoding the email string sidesteps the issue without losing
+# correctness (TF still creates SAs first via apply ordering).
 # ---------------------------------------------------------------------------
 
 locals {
   project_iam_bindings = {
-    # dbt-runner: list datasets, create datasets the first dbt run needs,
-    # run query jobs.
     "dbt_runner_bq_user" = {
       role   = "roles/bigquery.user"
-      member = google_service_account.sas["dbt-runner"].email
+      member = "serviceAccount:dbt-runner@${var.project}.iam.gserviceaccount.com"
     }
-    # bronze-loader: same, but separate SA per least-priv.
     "bronze_loader_bq_user" = {
       role   = "roles/bigquery.user"
-      member = google_service_account.sas["bronze-loader"].email
+      member = "serviceAccount:bronze-loader@${var.project}.iam.gserviceaccount.com"
     }
-    # gha-ci: lists weather_ci_* datasets, creates them if missing,
-    # runs build queries.
     "gha_ci_bq_user" = {
       role   = "roles/bigquery.user"
-      member = google_service_account.sas["gha-ci"].email
+      member = "serviceAccount:gha-ci@${var.project}.iam.gserviceaccount.com"
     }
-    # gha-cd: roll Cloud Run Jobs onto new image tags.
     "gha_cd_run_developer" = {
       role   = "roles/run.developer"
-      member = google_service_account.sas["gha-cd"].email
+      member = "serviceAccount:gha-cd@${var.project}.iam.gserviceaccount.com"
     }
   }
 }
@@ -38,7 +35,7 @@ resource "google_project_iam_member" "project_bindings" {
 
   project = var.project
   role    = each.value.role
-  member  = "serviceAccount:${each.value.member}"
+  member  = each.value.member
 }
 
 # ---------------------------------------------------------------------------
@@ -47,10 +44,10 @@ resource "google_project_iam_member" "project_bindings" {
 
 resource "google_artifact_registry_repository_iam_member" "gha_cd_writer" {
   project    = var.project
-  location   = google_artifact_registry_repository.dbt.location
-  repository = google_artifact_registry_repository.dbt.name
+  location   = var.region
+  repository = var.ar_repo
   role       = "roles/artifactregistry.writer"
-  member     = "serviceAccount:${google_service_account.sas["gha-cd"].email}"
+  member     = "serviceAccount:gha-cd@${var.project}.iam.gserviceaccount.com"
 }
 
 # ---------------------------------------------------------------------------
@@ -64,7 +61,7 @@ resource "google_artifact_registry_repository_iam_member" "gha_cd_writer" {
 resource "google_storage_bucket_iam_member" "bronze_loader_bucket_viewer" {
   bucket = var.gcs_bucket
   role   = "roles/storage.objectViewer"
-  member = "serviceAccount:${google_service_account.sas["bronze-loader"].email}"
+  member = "serviceAccount:bronze-loader@${var.project}.iam.gserviceaccount.com"
 }
 
 # ---------------------------------------------------------------------------
@@ -79,7 +76,7 @@ locals {
 resource "google_service_account_iam_member" "gha_cd_act_as" {
   for_each = toset(local.cd_act_as_targets)
 
-  service_account_id = google_service_account.sas[each.key].name
+  service_account_id = "projects/${var.project}/serviceAccounts/${each.key}@${var.project}.iam.gserviceaccount.com"
   role               = "roles/iam.serviceAccountUser"
-  member             = "serviceAccount:${google_service_account.sas["gha-cd"].email}"
+  member             = "serviceAccount:gha-cd@${var.project}.iam.gserviceaccount.com"
 }

@@ -20,7 +20,7 @@ resource "google_cloud_run_v2_job" "bronze_daily_load" {
 
   template {
     template {
-      service_account = google_service_account.sas["bronze-loader"].email
+      service_account = "bronze-loader@${var.project}.iam.gserviceaccount.com"
       max_retries     = 2
       timeout         = "900s"
 
@@ -63,7 +63,7 @@ resource "google_cloud_run_v2_job" "dbt_weekly_build" {
 
   template {
     template {
-      service_account = google_service_account.sas["dbt-runner"].email
+      service_account = "dbt-runner@${var.project}.iam.gserviceaccount.com"
       max_retries     = 1
       timeout         = "1800s"
 
@@ -111,7 +111,7 @@ resource "google_cloud_run_v2_job" "dbt_hourly_freshness" {
 
   template {
     template {
-      service_account = google_service_account.sas["dbt-runner"].email
+      service_account = "dbt-runner@${var.project}.iam.gserviceaccount.com"
       max_retries     = 1
       timeout         = "1800s"
 
@@ -151,13 +151,3 @@ resource "google_cloud_run_v2_job" "dbt_hourly_freshness" {
   }
 }
 
-# ---------------------------------------------------------------------------
-# Convenience map for IAM and Scheduler resources.
-# ---------------------------------------------------------------------------
-locals {
-  cloud_run_job_resources = {
-    "bronze-daily-load"    = google_cloud_run_v2_job.bronze_daily_load
-    "dbt-weekly-build"     = google_cloud_run_v2_job.dbt_weekly_build
-    "dbt-hourly-freshness" = google_cloud_run_v2_job.dbt_hourly_freshness
-  }
-}

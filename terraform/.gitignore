@@ -1,6 +1,8 @@
-# Terraform working artifacts.
+# Terraform working dir (provider binaries etc — refetched by `terraform init`).
 .terraform/
-.terraform.lock.hcl   # comment this out if you decide to commit lock files
+
+# .terraform.lock.hcl IS committed — pins provider versions across all
+# workstations / CI runs, same role as package-lock.yml for dbt.
 
 # Local state files (we use the GCS backend, but in a recovery scenario
 # the migration could drop these).

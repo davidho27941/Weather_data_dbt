@@ -21,13 +21,10 @@ resource "google_monitoring_notification_channel" "email" {
     managed_by = "terraform"
   }
 
-  # Verification status is set out-of-band by clicking the email's code
-  # back into the Monitoring API. Don't let TF assert it.
-  lifecycle {
-    ignore_changes = [
-      verification_status,
-    ]
-  }
+  # Note: verification_status is provider-read-only — flipping it from
+  # UNVERIFIED to VERIFIED happens out-of-band (sendVerificationCode +
+  # verify REST calls). TF treats it as a computed attribute and does
+  # not try to assert it; no lifecycle block needed here.
 }
 
 # ---------------------------------------------------------------------------
