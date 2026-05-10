@@ -11,6 +11,27 @@ Four workflows live here:
 
 ## One-time GCP setup
 
+> **Source of truth (PR #5 onward): [`../../terraform/`](../../terraform/).**
+> Service accounts, IAM bindings, BQ datasets, Cloud Run Jobs, Cloud
+> Schedulers, and the Cloud Monitoring channel + alert policy are all
+> Terraform-managed. To stand up a new project (or recover from a wipe),
+> the canonical path is:
+>
+> ```bash
+> cd terraform/
+> ./bootstrap/create_state_bucket.sh
+> cp terraform.tfvars.example terraform.tfvars  # set alert_email
+> terraform init
+> terraform apply
+> ```
+>
+> The gcloud commands documented in §1–§4 below remain as
+> *educational reference* for what Terraform is doing under the hood,
+> and as a manual fallback for the rare case Terraform itself is broken
+> or unavailable. **Don't run them on a Terraform-managed project unless
+> you understand the drift implications** — TF will revert manual
+> changes on next apply.
+
 You need two service accounts and one Artifact Registry repo (already
 documented in [`../../infra/dbt/README.md`](../../infra/dbt/README.md) for
 the dbt runtime SA — re-listed here so this doc stands alone).

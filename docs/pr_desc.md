@@ -45,6 +45,36 @@ is a no-op at apply time — the value is the new ground truth.
 - **`weather_dev_*` and `weather_ci_*` datasets.** Created on demand by
   dbt; ephemeral / per-developer.
 
+## Design notes that surfaced during import
+
+A few non-obvious patterns landed after `terraform import` actually ran
+against live state:
+
+- **String interpolation everywhere instead of cross-resource refs.**
+  `terraform import` evaluates dependent expressions per imported
+  instance, and during early imports the SA collection only carries the
+  one key being imported, so `google_service_account.sas[X].email`
+  references error out (`Invalid index ... is object with 1 attribute`).
+  All IAM bindings / Job runtime SA fields are constructed as plain
+  strings (`"X@${var.project}.iam.gserviceaccount.com"`) — TF still
+  creates SAs first via apply ordering, just without the attribute
+  lookup.
+
+- **Static `for_each` only.** `for_each = google_bigquery_dataset.managed`
+  errors out as "known only after apply" during incremental import.
+  Switched to `toset(local.managed_datasets)` (a static string list)
+  with `depends_on` for ordering — same import-resilience reason.
+
+- **Explicit `retry_config` on Cloud Schedulers.** The provider returns
+  a defaulted `retry_config` block on every refresh; if TF doesn't
+  declare one, it wants to "remove" the block on every plan, producing
+  eternal drift. Declared with the API defaults
+  (`retry_count = 0` = no Scheduler-level retry; the Cloud Run Job has
+  its own `max_retries` per Job).
+
+- **`.terraform.lock.hcl` is committed.** Pins provider versions across
+  workstations / CI, same role as `package-lock.yml` for dbt.
+
 ## Image-tag drift handling
 
 The three Cloud Run Jobs use `lifecycle.ignore_changes` on the
@@ -84,21 +114,64 @@ re-apply, no other surface to touch.
 
 ## Test plan
 
+Bootstrap + tfvars:
+
 - [ ] `cd terraform && ./bootstrap/create_state_bucket.sh` — succeeds
       whether the bucket exists or not.
 - [ ] `cp terraform.tfvars.example terraform.tfvars`, edit `alert_email`.
 - [ ] `terraform init` — connects to GCS backend cleanly.
+
+Pre-import GRANT prerequisite (dataset-level bindings that the original
+shell setup never created — TF requires the binding to exist for import
+to succeed):
+
+- [ ] Run these four `GRANT` statements once, then proceed to import.
+      Each is idempotent and harmless when re-run. dbt-runner is already
+      OWNER of the three managed datasets via creator privilege; the
+      explicit `dataEditor` is for TF tracking.
+      ```bash
+      PROJECT=side-project-staging
+      for DS in weather_staging weather_intermediate weather_marts; do
+        bq query --use_legacy_sql=false --location=asia-east1 "
+          GRANT \`roles/bigquery.dataEditor\`
+          ON SCHEMA \`${PROJECT}.${DS}\`
+          TO 'serviceAccount:dbt-runner@${PROJECT}.iam.gserviceaccount.com'
+        "
+      done
+      bq query --use_legacy_sql=false --location=asia-east1 "
+        GRANT \`roles/bigquery.dataViewer\`
+        ON SCHEMA \`${PROJECT}.weather_raw\`
+        TO 'serviceAccount:gha-ci@${PROJECT}.iam.gserviceaccount.com'
+      "
+      ```
+
+Import + plan:
+
 - [ ] `ALERT_EMAIL=davidho.prime@gmail.com ./import.sh` — re-runnable;
       already-imported lines log "skipped" rather than error.
-- [ ] `terraform plan` — output is near zero (IAM ordering noise is
-      acceptable; resource recreation is not).
-- [ ] If plan shows unexpected changes, iterate on the `.tf` until plan
-      is clean **before** any `terraform apply`.
-- [ ] After clean plan: `terraform apply` (should be zero or near-zero
-      changes) — confirm Job arg / scheduler cron / monitoring policy
-      attributes are unchanged in Console afterward.
+- [ ] If the email channel import logs `Channel ID: ` (empty), the
+      gcloud filter for `labels.email_address` didn't match in your
+      gcloud version. Look up the channel ID in the
+      [Console](https://console.cloud.google.com/monitoring/alerting/notifications)
+      and import directly:
+      `terraform import google_monitoring_notification_channel.email projects/.../notificationChannels/<ID>`
+- [ ] `terraform plan` — output is `Plan: 0 to add, N to change, 0 to destroy`.
+      Resource recreation (`X to add, Y to destroy`) is not acceptable.
+      The `N to change` should be cosmetic only (descriptions, user_labels).
+- [ ] Inspect each `~ ... will be updated in-place` block. If anything
+      semantically meaningful drifts (image tag → wrong, schedule cron →
+      wrong, IAM member → wrong), iterate on the `.tf` until plan is clean
+      **before** any `terraform apply`.
+
+Apply + verification:
+
+- [ ] `terraform plan -out=tfplan` then `terraform apply tfplan`.
+- [ ] Re-run `terraform plan` — should now print `No changes`. If anything
+      still drifts, that's an eternal-drift loop and needs a fix in `.tf`
+      (typical culprit: provider-defaulted block not declared).
 - [ ] Sanity test the live system still works: trigger a freshness Job
-      manually and confirm normal `PASS` result + no false alert.
+      manually (`gcloud run jobs execute dbt-hourly-freshness ...`) and
+      confirm normal `PASS` result + no false alert.
 
 ## What is NOT in this PR
 
