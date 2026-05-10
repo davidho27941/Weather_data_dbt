@@ -1,0 +1,67 @@
+# Cloud Monitoring alert policy: any of the three pipeline Cloud Run Jobs
+# completes with result=failed (i.e., retry-exhausted terminal failure).
+#
+# Fires on:
+#   - bronze-daily-load           (daily 02:00 Asia/Taipei)
+#   - dbt-weekly-build            (Mon 02:30 Asia/Taipei)
+#   - dbt-hourly-freshness        (every hour)
+#
+# A failed dbt-hourly-freshness execution covers the freshness ERROR
+# case too: dbt source freshness exits non-zero on any source ERROR,
+# which becomes a failed Cloud Run Job execution.
+#
+# Variables resolved by infra/monitoring/deploy.sh via envsubst:
+#   ${NOTIFICATION_CHANNEL_ID}    e.g. projects/.../notificationChannels/12345
+#   ${GCP_PROJECT_ID}             unused in template, kept for documentation
+
+displayName: "Cloud Run Job — execution failed"
+# user_labels.policy_id is the canonical lookup key used by deploy.sh
+# to detect "policy already exists" on re-runs. Don't change without
+# also updating the deploy script's filter.
+userLabels:
+  policy_id: cloud_run_job_failure
+documentation:
+  content: |
+    A pipeline Cloud Run Job (bronze-daily-load / dbt-weekly-build /
+    dbt-hourly-freshness) finished with result=failed after exhausting
+    retries.
+
+    Investigate:
+      gcloud run jobs executions list --job=<job-name> --region=asia-east1 --limit=5
+      gcloud beta run jobs executions describe <execution-name> --region=asia-east1
+      Cloud Logging filter:
+        resource.type="cloud_run_job"
+        resource.labels.job_name="<job-name>"
+        severity>=ERROR
+  mimeType: text/markdown
+
+combiner: OR
+
+conditions:
+  - displayName: "completed_execution_count{result=failed} > 0"
+    conditionThreshold:
+      filter: |
+        metric.type="run.googleapis.com/job/completed_execution_count"
+        AND resource.type="cloud_run_job"
+        AND metric.label.result="failed"
+        AND resource.label.job_name=monitoring.regex.full_match("bronze-daily-load|dbt-weekly-build|dbt-hourly-freshness")
+      aggregations:
+        - alignmentPeriod: 60s
+          perSeriesAligner: ALIGN_SUM
+          crossSeriesReducer: REDUCE_SUM
+          groupByFields:
+            - resource.label.job_name
+      comparison: COMPARISON_GT
+      thresholdValue: 0
+      duration: 0s
+      trigger:
+        count: 1
+
+notificationChannels:
+  - "${NOTIFICATION_CHANNEL_ID}"
+
+alertStrategy:
+  # Auto-close after 1 day if the metric returns to normal (no new
+  # failed executions). Keeps the alert dashboard tidy without losing
+  # signal — re-fires immediately if another failure happens.
+  autoClose: 86400s

@@ -27,7 +27,7 @@ GCP-native architecture (GCS + BigQuery + dbt + Cloud Run).
                               │  weather_*  │
                               └──────┬──────┘
                                      │ bulk load (one-time)
-                                     │ + daily MERGE (Scheduled Query)
+                                     │ + daily MERGE (Cloud Run Job, daily 02:00)
                                      ▼
                           ┌────────────────────┐
                           │  BigQuery bronze   │
@@ -47,6 +47,10 @@ GCP-native architecture (GCS + BigQuery + dbt + Cloud Run).
               └────────────────────────────────────────────────┘
 ```
 
+Any of the three Cloud Run Jobs (`bronze-daily-load`, `dbt-weekly-build`,
+`dbt-hourly-freshness`) failing a retry-exhausted execution fires a
+single Cloud Monitoring alert policy → email notification channel.
+
 Three time-grain rollups feed downstream ML training; `dim_stations`
 joins into every fact table. Sentinel-bearing measurement fields
 (`'X'`, `'T'`, `'-99'`, `'-98'`, `'990'`) are stored as STRING in
@@ -61,9 +65,10 @@ for the most recent change set see [`docs/pr_desc.md`](docs/pr_desc.md).
 | Path | Purpose |
 |---|---|
 | [`weather-crawler/`](weather-crawler/) | FastAPI service (Cloud Run) that fetches CWA APIs and writes JSON to GCS |
-| [`infra/bq/`](infra/bq/) | Bronze layer: schema files + bulk load and daily MERGE shell scripts |
+| [`infra/bq/`](infra/bq/) | Bronze layer: schema files, bulk load scripts, and `bronze-daily-load` Cloud Run Job (Dockerfile + deploy + scheduler scripts) |
 | [`weather_data_dbt/`](weather_data_dbt/) | dbt project (BigQuery profile, dev / stg / prod / ci targets) |
-| [`infra/dbt/`](infra/dbt/) | Dockerfile + scripts for the two Cloud Run Jobs (`dbt-weekly-build`, `dbt-hourly-freshness`) |
+| [`infra/dbt/`](infra/dbt/) | Dockerfile + scripts for the two Cloud Run Jobs (`dbt-weekly-build`, `dbt-hourly-freshness`) and their Cloud Scheduler triggers |
+| [`infra/monitoring/`](infra/monitoring/) | Cloud Monitoring email alert policy on Cloud Run Job execution failures |
 | [`.github/workflows/`](.github/workflows/) | GitHub Actions CI (PR validation) + CD (image push, Cloud Run Job rollout) + dbt docs publishing |
 | [`docs/`](docs/) | `redesign_proposal.md` (design doc) and `pr_desc.md` (current PR description) |
 | `dags/`, root `Dockerfile` | **Legacy** v1 Airflow + Snowflake; no longer wired into anything. Slated for removal in a follow-up cleanup PR. |
@@ -76,7 +81,8 @@ for the most recent change set see [`docs/pr_desc.md`](docs/pr_desc.md).
 | Object storage | GCS (`gs://${GCS_BUCKET}/`, hive-partitioned by `dt=YYYY-MM-DD`) |
 | Warehouse | BigQuery (`asia-east1`, `side-project-staging` / future `side-project-prod`) |
 | Transformation | `dbt-core` 1.11.x · `dbt-bigquery` 1.11.x · `dbt_utils` 1.3.x |
-| Orchestration | Cloud Run Jobs + Cloud Scheduler (BQ Scheduled Query for the bronze MERGE) |
+| Orchestration | Three Cloud Run Jobs + Cloud Scheduler triggers: `bronze-daily-load` (`0 2 * * *`), `dbt-weekly-build` (`30 2 * * 1`), `dbt-hourly-freshness` (`0 * * * *`) |
+| Alerting | Cloud Monitoring email alert policy on `run.googleapis.com/job/completed_execution_count{result=failed}` for the three jobs above |
 | CI/CD | GitHub Actions (auth via service-account JSON keys; WIF migration documented) |
 
 ## Environments
@@ -87,7 +93,7 @@ Three dbt targets backed by dataset-level isolation in BQ:
 |---|---|---|
 | `dev` | Local developer runs (`gcloud auth application-default login`) | `weather_dev_{staging,intermediate,marts}` |
 | `ci` | GitHub Actions PR validation | `weather_ci_{staging,intermediate,marts}` (rebuilt each run, 7-day bronze subsample) |
-| `stg` | Daily Cloud Run Job (current source of truth) | `weather_{staging,intermediate,marts}` |
+| `stg` | Weekly Cloud Run Job, Mon 02:30 Asia/Taipei (current source of truth) | `weather_{staging,intermediate,marts}` |
 | `prod` | Reserved for `side-project-prod` once it stands up | (same dataset names, separate project) |
 
 The custom [`generate_schema_name`](weather_data_dbt/macros/generate_schema_name.sql)
@@ -121,16 +127,19 @@ dbt docs are auto-published to GitHub Pages on every push to `main`:
 - **v1 (deprecated)**: Airflow 2.9 + AWS S3 + Snowflake. Source under
   [`dags/`](dags/) and the Airflow root `Dockerfile`. Diagrams under
   [`images/en/`](images/en/) reflect this stack.
-- **v2 (current)**: GCP-native. Bronze added in PR #2; dbt rewrite for
-  BigQuery + Cloud Run Jobs + GHA CI/CD in PR #3.
+- **v2 (current)**: GCP-native.
+  - PR #2 — bronze layer in BigQuery (`weather_raw.*`) via bulk load + daily MERGE.
+  - PR #3 — dbt rewrite for BigQuery, three Cloud Run Jobs (bronze daily, dbt weekly, dbt freshness hourly) wired with Cloud Scheduler triggers, GHA CI/CD.
+  - PR #4 — Cloud Monitoring email alert on Cloud Run Job execution failures.
 
 ## Future work
 
-Tracked under "What is NOT in this PR" in [`docs/pr_desc.md`](docs/pr_desc.md):
-
-- Terraform for SA / IAM / Artifact Registry / Cloud Run Jobs / Scheduler
-- Cloud Scheduler triggers (currently as gcloud commands in [`infra/dbt/README.md`](infra/dbt/README.md))
-- BQ Scheduled Query setup for `infra/bq/daily_load.sql`
-- Failure alerting (freshness wrapper + Cloud Monitoring + Discord/Slack webhooks)
-- Workload Identity Federation for GitHub Actions
-- Removing legacy Airflow / Snowflake artifacts
+- **Terraform** for SA / IAM / Artifact Registry / Cloud Run Jobs / Schedulers / monitoring policy (everything currently created via shell scripts).
+- **Webhook alert channel** (Discord / Slack / Pub-Sub) + **freshness wrapper** that posts structured per-source detail. Email channel can't carry granular freshness payloads usefully.
+- **Cloud Monitoring dashboards** for pipeline health (Job duration trends, BQ slot consumption, GCS object age).
+- **BQ data-quality monitoring** (e.g. [`elementary-data`](https://github.com/elementary-data/elementary)
+  layered on dbt artifacts).
+- **Workload Identity Federation** for GitHub Actions, replacing the
+  two SA-key secrets.
+- **Removing legacy Airflow / Snowflake artifacts** (`dags/`, root
+  `Dockerfile`, old image references).
