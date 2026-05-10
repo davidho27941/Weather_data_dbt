@@ -2,8 +2,8 @@
 #
 # Create or update the two Cloud Run Jobs for dbt:
 #
-#   dbt-daily-build         daily 02:30 Asia/Taipei  →  dbt build --target stg
-#   dbt-hourly-freshness    every hour              →  dbt source freshness --target stg
+#   dbt-weekly-build        Mon 02:30 Asia/Taipei  →  dbt build --target stg
+#   dbt-hourly-freshness    every hour             →  dbt source freshness --target stg
 #
 # Cloud Scheduler triggers are attached separately (Console or Terraform).
 # This script only manages the Job definitions themselves.
@@ -52,8 +52,8 @@ deploy_job() {
   echo
 }
 
-# 1. Daily dbt build
-deploy_job "dbt-daily-build" "build"
+# 1. Weekly dbt build
+deploy_job "dbt-weekly-build" "build"
 
 # 2. Hourly source freshness
 deploy_job "dbt-hourly-freshness" "source" "freshness"
@@ -64,14 +64,14 @@ Both Cloud Run Jobs deployed.
 
 Next steps (manual, see infra/dbt/README.md):
   - Attach a Cloud Scheduler trigger for each Job.
-    daily build:        cron '30 2 * * *' time-zone Asia/Taipei
-    hourly freshness:   cron '0 * * * *' time-zone Asia/Taipei
+    weekly build:       cron '30 2 * * 1' time-zone Asia/Taipei  (Monday 02:30)
+    hourly freshness:   cron '0 * * * *'  time-zone Asia/Taipei
   - Verify SA permissions:
     bigquery.dataEditor on weather_dev/staging/intermediate/marts datasets
     bigquery.dataViewer on weather_raw
     bigquery.user       on the project
 
 Test ad-hoc:
-  gcloud run jobs execute dbt-daily-build --region=${REGION}
+  gcloud run jobs execute dbt-weekly-build --region=${REGION}
   gcloud run jobs execute dbt-hourly-freshness --region=${REGION}
 EOF

@@ -1,7 +1,8 @@
 # dbt Cloud Run Job orchestration
 
-Builds and deploys the two Cloud Run Jobs that run `dbt build` (daily) and
-`dbt source freshness` (hourly) against the `stg` target.
+Builds and deploys the two Cloud Run Jobs that run `dbt build` (weekly,
+Mon 02:30 Asia/Taipei) and `dbt source freshness` (hourly) against the
+`stg` target.
 
 > Why Cloud Run Jobs and not BigQuery Scheduled Query: dbt is a Python
 > tool — it compiles Jinja, runs tests, and emits a manifest. It cannot
@@ -12,18 +13,21 @@ Builds and deploys the two Cloud Run Jobs that run `dbt build` (daily) and
 ## Architecture
 
 ```
-Cloud Scheduler                   Cloud Run Job              BigQuery
-─────────────────                 ─────────────              ────────
-30 2 * * * Asia/Taipei  ───────▶  dbt-daily-build      ───▶  weather_staging,
-                                  (dbt build)                weather_intermediate,
-                                                             weather_marts
-0  * * * * Asia/Taipei  ───────▶  dbt-hourly-freshness ───▶  query history
+Cloud Scheduler                    Cloud Run Job               BigQuery
+─────────────────                  ─────────────               ────────
+30 2 * * 1 Asia/Taipei  ───────▶  dbt-weekly-build      ───▶  weather_staging,
+(Monday 02:30)                    (dbt build)                  weather_intermediate,
+                                                               weather_marts
+0  * * * * Asia/Taipei  ───────▶  dbt-hourly-freshness  ───▶  query history
                                   (dbt source freshness)
 ```
 
 The bronze daily load runs separately as a BigQuery Scheduled Query at
-02:00 Asia/Taipei. dbt-daily-build is offset 30 minutes later so the bronze
-data is in place before dbt reads it.
+02:00 Asia/Taipei every day; the weekly dbt build is offset 30 minutes
+after Monday's bronze load so the freshest data is in place before dbt
+reads it. The 7-day MERGE cadence is absorbed via
+`measurements_lookback_days: 10` (7-day cadence + 3-day late-arrival
+buffer).
 
 ## Files
 
@@ -83,11 +87,11 @@ PROJECT=side-project-staging
 REGION=asia-east1
 SCHEDULER_SA=scheduler-invoker@${PROJECT}.iam.gserviceaccount.com
 
-# Daily build at 02:30 Asia/Taipei
-gcloud scheduler jobs create http dbt-daily-build-trigger \
+# Weekly build at Monday 02:30 Asia/Taipei
+gcloud scheduler jobs create http dbt-weekly-build-trigger \
   --location="${REGION}" \
-  --schedule="30 2 * * *" --time-zone="Asia/Taipei" \
-  --uri="https://${REGION}-run.googleapis.com/v2/projects/${PROJECT}/locations/${REGION}/jobs/dbt-daily-build:run" \
+  --schedule="30 2 * * 1" --time-zone="Asia/Taipei" \
+  --uri="https://${REGION}-run.googleapis.com/v2/projects/${PROJECT}/locations/${REGION}/jobs/dbt-weekly-build:run" \
   --http-method=POST \
   --oauth-service-account-email="${SCHEDULER_SA}"
 
@@ -103,7 +107,7 @@ gcloud scheduler jobs create http dbt-hourly-freshness-trigger \
 The Scheduler SA needs `roles/run.invoker` on both Jobs:
 
 ```bash
-for JOB in dbt-daily-build dbt-hourly-freshness; do
+for JOB in dbt-weekly-build dbt-hourly-freshness; do
   gcloud run jobs add-iam-policy-binding "${JOB}" \
     --region="${REGION}" \
     --member="serviceAccount:${SCHEDULER_SA}" \
@@ -114,11 +118,11 @@ done
 ## Test ad-hoc
 
 ```bash
-# Trigger the daily build manually
-gcloud run jobs execute dbt-daily-build --region=asia-east1
+# Trigger the weekly build manually
+gcloud run jobs execute dbt-weekly-build --region=asia-east1
 
 # Tail logs of the most recent execution
-gcloud beta run jobs executions list --job=dbt-daily-build --region=asia-east1 --limit=1
+gcloud beta run jobs executions list --job=dbt-weekly-build --region=asia-east1 --limit=1
 gcloud beta run jobs executions describe <execution-id> --region=asia-east1
 ```
 

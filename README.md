@@ -10,31 +10,41 @@ GCP-native architecture (GCS + BigQuery + dbt + Cloud Run).
 ## Architecture
 
 ```
-                ┌──────────────┐  every 10 min   ┌─────────────┐
-   CWA APIs ───▶│ weather-     │ ──────────────▶ │  GCS bucket │
-                │ crawler      │   JSON files    │  weather_*  │
-                │ (Cloud Run)  │                 └──────┬──────┘
-                └──────────────┘                        │
-                                                        │ bulk load (one-time)
-                                                        │ + daily MERGE (Scheduled Query)
-                                                        ▼
-                                              ┌────────────────────┐
-                                              │  BigQuery bronze   │
-                                              │  weather_raw.*     │
-                                              └─────────┬──────────┘
-                                                        │
-                                                        │ dbt build  (Cloud Run Job, daily 02:30)
-                                                        │ dbt source freshness  (Cloud Run Job, hourly)
-                                                        ▼
-                          ┌────────────────────────────────────────────────┐
-                          │  BigQuery silver / gold                        │
-                          │  weather_staging   →   weather_intermediate    │
-                          │                          ↓                     │
-                          │                    weather_marts               │
-                          │   fct_measurements_{10min,hourly,daily,        │
-                          │                     weekly,monthly}            │
-                          │   dim_stations                                 │
-                          └────────────────────────────────────────────────┘
+                          ┌──────────────────┐
+                          │ Cloud Scheduler  │  every 10 min cron
+                          └────────┬─────────┘
+                                   │ trigger
+                                   ▼
+       ┌──────────┐ HTTPS GET ┌──────────────┐
+       │ CWA APIs │◀───────── │ weather-     │
+       │          │── JSON ──▶│ crawler      │
+       └──────────┘           │ (Cloud Run)  │
+                              └──────┬───────┘
+                                     │ write JSON files
+                                     ▼
+                              ┌─────────────┐
+                              │ GCS bucket  │
+                              │  weather_*  │
+                              └──────┬──────┘
+                                     │ bulk load (one-time)
+                                     │ + daily MERGE (Scheduled Query)
+                                     ▼
+                          ┌────────────────────┐
+                          │  BigQuery bronze   │
+                          │  weather_raw.*     │
+                          └─────────┬──────────┘
+                                    │ dbt build  (Cloud Run Job, weekly Mon 02:30)
+                                    │ dbt source freshness  (Cloud Run Job, hourly)
+                                    ▼
+              ┌────────────────────────────────────────────────┐
+              │  BigQuery silver / gold                        │
+              │  weather_staging   →   weather_intermediate    │
+              │                          ↓                     │
+              │                    weather_marts               │
+              │   fct_measurements_{10min,hourly,daily,        │
+              │                     weekly,monthly}            │
+              │   dim_stations                                 │
+              └────────────────────────────────────────────────┘
 ```
 
 Three time-grain rollups feed downstream ML training; `dim_stations`
@@ -53,7 +63,7 @@ for the most recent change set see [`docs/pr_desc.md`](docs/pr_desc.md).
 | [`weather-crawler/`](weather-crawler/) | FastAPI service (Cloud Run) that fetches CWA APIs and writes JSON to GCS |
 | [`infra/bq/`](infra/bq/) | Bronze layer: schema files + bulk load and daily MERGE shell scripts |
 | [`weather_data_dbt/`](weather_data_dbt/) | dbt project (BigQuery profile, dev / stg / prod / ci targets) |
-| [`infra/dbt/`](infra/dbt/) | Dockerfile + scripts for the two Cloud Run Jobs (`dbt-daily-build`, `dbt-hourly-freshness`) |
+| [`infra/dbt/`](infra/dbt/) | Dockerfile + scripts for the two Cloud Run Jobs (`dbt-weekly-build`, `dbt-hourly-freshness`) |
 | [`.github/workflows/`](.github/workflows/) | GitHub Actions CI (PR validation) + CD (image push, Cloud Run Job rollout) + dbt docs publishing |
 | [`docs/`](docs/) | `redesign_proposal.md` (design doc) and `pr_desc.md` (current PR description) |
 | `dags/`, root `Dockerfile` | **Legacy** v1 Airflow + Snowflake; no longer wired into anything. Slated for removal in a follow-up cleanup PR. |

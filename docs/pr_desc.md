@@ -52,7 +52,7 @@ once before turning on the dbt build.
 | Env | Purpose | GCP project | Auth |
 |---|---|---|---|
 | `dev` | Local developer runs | `side-project-staging` | `gcloud auth application-default login` (oauth) |
-| `stg` | Automated daily build | `side-project-staging` | Workload Identity on Cloud Run |
+| `stg` | Automated weekly build (Mon 02:30 Asia/Taipei) | `side-project-staging` | Workload Identity on Cloud Run |
 | `prod` | Future production | `side-project-prod` (TBD) | Workload Identity (must, no keyfiles) |
 
 All three envs read source data from `weather_raw` (currently in
@@ -158,7 +158,7 @@ post-hoc, conflating two separate concerns).
   measured at this station" apart from "measurement missing this snapshot".
 - **Incremental for 10-min / hourly / daily** with `merge` strategy and
   `unique_key=['station_id', 'measure_at']`; lookback window via the
-  `measurements_lookback_days` var (default 5 days).
+  `measurements_lookback_days` var (default 10 days = 7-day cadence + 3-day buffer).
 - **Full-table for weekly / monthly**: row counts are small (~32K and ~8K
   respectively), incremental adds complexity without meaningful cost
   savings.
@@ -176,7 +176,7 @@ post-hoc, conflating two separate concerns).
 | [`.dockerignore`](infra/dbt/.dockerignore) | Excludes secrets, build artifacts, sibling repos |
 | [`entrypoint.sh`](infra/dbt/entrypoint.sh) | Forwards args to dbt with the configured target/profiles dir |
 | [`build_and_push.sh`](infra/dbt/build_and_push.sh) | docker build + push to Artifact Registry |
-| [`deploy_jobs.sh`](infra/dbt/deploy_jobs.sh) | gcloud run jobs deploy for `dbt-daily-build` + `dbt-hourly-freshness` |
+| [`deploy_jobs.sh`](infra/dbt/deploy_jobs.sh) | gcloud run jobs deploy for `dbt-weekly-build` + `dbt-hourly-freshness` |
 | [`README.md`](infra/dbt/README.md) | Operator runbook + Cloud Scheduler setup commands |
 
 ### CI/CD: `.github/workflows/`
@@ -240,7 +240,7 @@ dbt local validation:
 Container build (manual):
 
 - [ ] `infra/dbt/build_and_push.sh` builds and pushes the image.
-- [ ] `gcloud run jobs execute dbt-daily-build --region=asia-east1`
+- [ ] `gcloud run jobs execute dbt-weekly-build --region=asia-east1`
   reproduces a successful build against stg.
 
 CI/CD (one-time setup per `.github/workflows/README.md`, then per-event):
@@ -252,7 +252,7 @@ CI/CD (one-time setup per `.github/workflows/README.md`, then per-event):
 - [ ] Open a throwaway PR touching `weather_data_dbt/**` and confirm
   `dbt CI` runs `parse` + `build --target ci` + tests green.
 - [ ] Merge to `main` and confirm `dbt CD` pushes a fresh image and
-  rolls both Cloud Run Jobs (`gcloud run jobs describe dbt-daily-build
+  rolls both Cloud Run Jobs (`gcloud run jobs describe dbt-weekly-build
   --region=asia-east1` shows the new digest).
 - [ ] Confirm `dbt docs` workflow publishes to Pages.
 

@@ -5,7 +5,7 @@ Three workflows live here:
 | Workflow | Trigger | What it does |
 |---|---|---|
 | [`dbt_ci.yml`](dbt_ci.yml) | PRs touching `weather_data_dbt/**` or `infra/dbt/**` | `dbt deps` + `dbt parse` + `dbt build --target ci --full-refresh --vars '{ci_sample_days: 7}'` against `weather_ci_*` |
-| [`dbt_cd.yml`](dbt_cd.yml) | Push to `main` touching `weather_data_dbt/**` or `infra/dbt/**` | Build + push image to Artifact Registry, then `gcloud run jobs update` on `dbt-daily-build` and `dbt-hourly-freshness` |
+| [`dbt_cd.yml`](dbt_cd.yml) | Push to `main` touching `weather_data_dbt/**` or `infra/dbt/**` | Build + push image to Artifact Registry, then `gcloud run jobs update` on `dbt-weekly-build` and `dbt-hourly-freshness` |
 | [`build_dbt_docs.yml`](build_dbt_docs.yml) | Push to `main` touching `weather_data_dbt/**` | `dbt docs generate` + publish to GitHub Pages |
 
 ## One-time GCP setup

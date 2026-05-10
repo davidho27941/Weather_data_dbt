@@ -29,8 +29,10 @@ dispatch:
 # ---------------------------------------------------------------------------
 # Variables
 #
-# measurements_lookback_days: how far back the daily incremental MERGE
-# re-scans, to absorb late-arriving data. Bump for backfills.
+# measurements_lookback_days: how far back the weekly incremental MERGE
+# re-scans, to absorb late-arriving data. The build runs Mon 02:30
+# Asia/Taipei, so 10 days = 7-day cadence + 3-day late-arrival buffer.
+# Bump further for backfills.
 #
 # ci_sample_days: when > 0, stg_observations restricts the bronze read to
 # the most recent N days. Used by GitHub Actions CI (target=ci) to keep
@@ -44,7 +46,7 @@ dispatch:
 # override the default `side-project-staging`.
 # ---------------------------------------------------------------------------
 vars:
-  measurements_lookback_days: 5
+  measurements_lookback_days: 10
   ci_sample_days: 0
 
 # ---------------------------------------------------------------------------

@@ -13,31 +13,41 @@
 ## アーキテクチャ
 
 ```
-                ┌──────────────┐  10 分ごと       ┌─────────────┐
-   CWA APIs ───▶│ weather-     │ ──────────────▶ │  GCS bucket │
-                │ crawler      │   JSON ファイル  │  weather_*  │
-                │ (Cloud Run)  │                 └──────┬──────┘
-                └──────────────┘                        │
-                                                        │ 一括ロード（初回）
-                                                        │ + 日次 MERGE（Scheduled Query）
-                                                        ▼
-                                              ┌────────────────────┐
-                                              │  BigQuery bronze   │
-                                              │  weather_raw.*     │
-                                              └─────────┬──────────┘
-                                                        │
-                                                        │ dbt build  (Cloud Run Job, 毎日 02:30)
-                                                        │ dbt source freshness  (Cloud Run Job, 毎時)
-                                                        ▼
-                          ┌────────────────────────────────────────────────┐
-                          │  BigQuery silver / gold                        │
-                          │  weather_staging   →   weather_intermediate    │
-                          │                          ↓                     │
-                          │                    weather_marts               │
-                          │   fct_measurements_{10min,hourly,daily,        │
-                          │                     weekly,monthly}            │
-                          │   dim_stations                                 │
-                          └────────────────────────────────────────────────┘
+                          ┌──────────────────┐
+                          │ Cloud Scheduler  │  10 分ごとの cron
+                          └────────┬─────────┘
+                                   │ トリガー
+                                   ▼
+       ┌──────────┐ HTTPS GET ┌──────────────┐
+       │ CWA APIs │◀───────── │ weather-     │
+       │          │── JSON ──▶│ crawler      │
+       └──────────┘           │ (Cloud Run)  │
+                              └──────┬───────┘
+                                     │ JSON ファイル書き込み
+                                     ▼
+                              ┌─────────────┐
+                              │ GCS bucket  │
+                              │  weather_*  │
+                              └──────┬──────┘
+                                     │ 一括ロード（初回）
+                                     │ + 日次 MERGE（Scheduled Query）
+                                     ▼
+                          ┌────────────────────┐
+                          │  BigQuery bronze   │
+                          │  weather_raw.*     │
+                          └─────────┬──────────┘
+                                    │ dbt build  (Cloud Run Job, 毎週月曜 02:30)
+                                    │ dbt source freshness  (Cloud Run Job, 毎時)
+                                    ▼
+              ┌────────────────────────────────────────────────┐
+              │  BigQuery silver / gold                        │
+              │  weather_staging   →   weather_intermediate    │
+              │                          ↓                     │
+              │                    weather_marts               │
+              │   fct_measurements_{10min,hourly,daily,        │
+              │                     weekly,monthly}            │
+              │   dim_stations                                 │
+              └────────────────────────────────────────────────┘
 ```
 
 3 つの時間粒度のロールアップ（10 分 / 時 / 日 / 週 / 月）が下流の ML 学習に
@@ -57,7 +67,7 @@ ML パイプラインがそれぞれ必要なカラムを選択できます。
 | [`weather-crawler/`](../weather-crawler/) | CWA API を取得し JSON を GCS に書き込む FastAPI サービス（Cloud Run） |
 | [`infra/bq/`](../infra/bq/) | Bronze 層：スキーマファイル + 一括ロードと日次 MERGE のシェルスクリプト |
 | [`weather_data_dbt/`](../weather_data_dbt/) | dbt プロジェクト（BigQuery プロファイル、dev / stg / prod / ci ターゲット） |
-| [`infra/dbt/`](../infra/dbt/) | 2 つの Cloud Run Job（`dbt-daily-build`、`dbt-hourly-freshness`）用の Dockerfile + スクリプト |
+| [`infra/dbt/`](../infra/dbt/) | 2 つの Cloud Run Job（`dbt-weekly-build`、`dbt-hourly-freshness`）用の Dockerfile + スクリプト |
 | [`.github/workflows/`](../.github/workflows/) | GitHub Actions：CI（PR 検証）+ CD（イメージ push、Cloud Run Job ロールアウト）+ dbt docs 公開 |
 | [`docs/`](../docs/) | `redesign_proposal.md`（設計ドキュメント）と `pr_desc.md`（最新 PR 説明） |
 | `dags/`、ルートの `Dockerfile` | **レガシー** v1 Airflow + Snowflake 用。現在は配線されておらず、後続のクリーンアップ PR で削除予定。 |

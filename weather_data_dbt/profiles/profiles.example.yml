@@ -15,8 +15,8 @@
 #           `weather_ci_intermediate` / `weather_ci_marts`. Auth via
 #           GOOGLE_APPLICATION_CREDENTIALS (set by google-github-actions/auth).
 #           Always paired with --vars 'ci_sample_days: N' to keep cost low.
-#   - stg:  pre-production / scheduled daily build. Outputs in
-#           `weather_staging` / `weather_intermediate` / `weather_marts`.
+#   - stg:  pre-production / scheduled weekly build (Mon 02:30 Asia/Taipei).
+#           Outputs in `weather_staging` / `weather_intermediate` / `weather_marts`.
 #   - prod: production. Same dataset names as stg but in a separate GCP project,
 #           with stricter IAM and Workload Identity authentication.
 #
@@ -55,7 +55,7 @@ weather_data_dbt:
       job_retries: 1
       job_execution_timeout_seconds: 900
 
-    # ----- Staging (automated daily build, current source of truth) -------
+    # ----- Staging (automated weekly build Mon 02:30, current source of truth) -----
     stg:
       type: bigquery
       method: oauth                         # switch to Workload Identity once on Cloud Run

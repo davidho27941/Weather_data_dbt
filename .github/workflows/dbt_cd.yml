@@ -6,7 +6,7 @@ name: dbt CD
 #   2. Push to Artifact Registry under two tags:
 #        ${REGION}-docker.pkg.dev/${PROJECT}/dbt/dbt-weather:${SHA}
 #        ${REGION}-docker.pkg.dev/${PROJECT}/dbt/dbt-weather:latest
-#   3. Roll the two Cloud Run Jobs (dbt-daily-build, dbt-hourly-freshness)
+#   3. Roll the two Cloud Run Jobs (dbt-weekly-build, dbt-hourly-freshness)
 #      onto the new image with `gcloud run jobs update`.
 #
 # The Cloud Run Job definitions themselves (CPU / memory / timeout / args /
@@ -108,7 +108,7 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           IMAGE="${BQ_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/dbt-weather:${TAG}"
-          for JOB in dbt-daily-build dbt-hourly-freshness; do
+          for JOB in dbt-weekly-build dbt-hourly-freshness; do
             echo "==> updating ${JOB} → ${IMAGE}"
             gcloud run jobs update "${JOB}" \
               --project="${GCP_PROJECT_ID}" \
@@ -125,5 +125,5 @@ jobs:
             echo
             echo "- image tag: \`${TAG}\`"
             echo "- pushed to: \`${BQ_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/dbt-weather\`"
-            echo "- updated jobs: \`dbt-daily-build\`, \`dbt-hourly-freshness\`"
+            echo "- updated jobs: \`dbt-weekly-build\`, \`dbt-hourly-freshness\`"
           } >> "$GITHUB_STEP_SUMMARY"

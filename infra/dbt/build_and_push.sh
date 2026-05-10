@@ -37,5 +37,5 @@ echo
 echo "Image pushed: ${IMAGE}"
 echo
 echo "To update the Cloud Run Jobs to use this image, run:"
-echo "  gcloud run jobs update dbt-daily-build       --region=${REGION} --image=${IMAGE}"
+echo "  gcloud run jobs update dbt-weekly-build       --region=${REGION} --image=${IMAGE}"
 echo "  gcloud run jobs update dbt-hourly-freshness  --region=${REGION} --image=${IMAGE}"

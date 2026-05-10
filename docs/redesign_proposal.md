@@ -948,9 +948,15 @@ dbt 的 `target/sources.json` 可餵到 Slack / Discord webhook 做告警。
 
 ---
 
-## 13. Orchestration：dbt 與 crawler 解耦，每日批次
+## 13. Orchestration：dbt 與 crawler 解耦，週批次
 
-> 目標：dbt 從 crawler 完全解耦，**每日跑一次** mart 重算，但維持 crawler 失效的快速偵測能力。
+> **更新（實作後）**：原始設計提出每日批次（02:00），落地時改為 **每週一 02:30 Asia/Taipei** 一次。
+> 對應 Cloud Run Job 重命名為 `dbt-weekly-build`，`measurements_lookback_days` 由 5 提升為 10
+> （= 7 天 cadence + 3 天遲到緩衝）。本節保留原本「每日」的設計推論作為歷史記錄，
+> 但所有具名 artifact（cron、job 名、lookback 值）皆以 [`infra/dbt/`](../infra/dbt/) 與
+> [`weather_data_dbt/dbt_project.yml`](../weather_data_dbt/dbt_project.yml) 為實作真實。
+>
+> 目標：dbt 從 crawler 完全解耦，**每週跑一次** mart 重算，但維持 crawler 失效的快速偵測能力。
 
 ### 13.1 排程拓撲
 
@@ -1036,10 +1042,10 @@ weather_data_dbt:
 
 ### 13.4 兩個 Cloud Run Job
 
-#### 13.4.1 `dbt-daily-build`（每日批次）
+#### 13.4.1 `dbt-weekly-build`（週一批次）
 
 ```bash
-gcloud run jobs create dbt-daily-build \
+gcloud run jobs create dbt-weekly-build \
   --image="$REGION-docker.pkg.dev/$PROJECT/dbt/weather-dbt:$TAG" \
   --region="$REGION" \
   --service-account="dbt-runner@$PROJECT.iam.gserviceaccount.com" \
@@ -1052,10 +1058,10 @@ gcloud run jobs create dbt-daily-build \
 
 排程：
 ```bash
-gcloud scheduler jobs create http dbt-daily-trigger \
+gcloud scheduler jobs create http dbt-weekly-trigger \
   --location="$REGION" \
-  --schedule="0 2 * * *" --time-zone="Asia/Taipei" \
-  --uri="https://$REGION-run.googleapis.com/v2/projects/$PROJECT/locations/$REGION/jobs/dbt-daily-build:run" \
+  --schedule="30 2 * * 1" --time-zone="Asia/Taipei" \
+  --uri="https://$REGION-run.googleapis.com/v2/projects/$PROJECT/locations/$REGION/jobs/dbt-weekly-build:run" \
   --http-method=POST \
   --oauth-service-account-email="scheduler-invoker@$PROJECT.iam.gserviceaccount.com"
 ```
@@ -1158,8 +1164,8 @@ resource "google_storage_bucket_iam_member" "dbt_gcs_viewer" {
 }
 
 # --- daily build job ---
-resource "google_cloud_run_v2_job" "dbt_daily_build" {
-  name     = "dbt-daily-build"
+resource "google_cloud_run_v2_job" "dbt_weekly_build" {
+  name     = "dbt-weekly-build"
   location = local.region
 
   template {
@@ -1218,7 +1224,7 @@ resource "google_service_account" "scheduler_invoker" {
 }
 
 resource "google_cloud_run_v2_job_iam_member" "invoker_build" {
-  name     = google_cloud_run_v2_job.dbt_daily_build.name
+  name     = google_cloud_run_v2_job.dbt_weekly_build.name
   location = local.region
   role     = "roles/run.invoker"
   member   = "serviceAccount:${google_service_account.scheduler_invoker.email}"
@@ -1231,15 +1237,15 @@ resource "google_cloud_run_v2_job_iam_member" "invoker_freshness" {
   member   = "serviceAccount:${google_service_account.scheduler_invoker.email}"
 }
 
-resource "google_cloud_scheduler_job" "dbt_daily" {
-  name      = "dbt-daily-trigger"
+resource "google_cloud_scheduler_job" "dbt_weekly" {
+  name      = "dbt-weekly-trigger"
   region    = local.region
-  schedule  = "0 2 * * *"
+  schedule  = "30 2 * * 1"
   time_zone = "Asia/Taipei"
 
   http_target {
     http_method = "POST"
-    uri = "https://${local.region}-run.googleapis.com/v2/projects/${var.project}/locations/${local.region}/jobs/${google_cloud_run_v2_job.dbt_daily_build.name}:run"
+    uri = "https://${local.region}-run.googleapis.com/v2/projects/${var.project}/locations/${local.region}/jobs/${google_cloud_run_v2_job.dbt_weekly_build.name}:run"
     oauth_token {
       service_account_email = google_service_account.scheduler_invoker.email
     }
@@ -1264,15 +1270,15 @@ resource "google_cloud_scheduler_job" "dbt_freshness" {
 
 ### 13.7 Lookback window 重新評估
 
-每日跑 + crawler 偶爾失敗 → lookback 從 §3 預設的 3 天放寬到 **5–7 天** 比較安全：
+週批次（Mon 02:30）+ crawler 偶爾失敗 → lookback 從 §3 預設的 3 天放寬到 **10 天**（= 7 天 cadence + 3 天遲到緩衝）：
 
 ```yaml
 # dbt_project.yml
 vars:
-  measurements_lookback_days: 5
+  measurements_lookback_days: 10
 ```
 
-成本：每日 MERGE 多掃 2–4 天 partition。BigQuery 上單一 partition (1 station × 1 day × 144 records) 約 KB 級，2 萬個 station × 5 天 ≈ 中位 GB 級掃描，**單次成本約 $0.005**。完全可接受。
+成本：每週 MERGE 多掃 ~10 天 partition。BigQuery 上單一 partition (1 station × 1 day × 144 records) 約 KB 級，2 萬個 station × 10 天 ≈ 中位 GB 級掃描，**單次成本約 $0.01**。完全可接受。
 
 ### 13.8 Backfill / 補資料 Runbook
 
@@ -1280,13 +1286,13 @@ vars:
 
 ```bash
 # 1. 觸發一次性 build，臨時放寬 lookback（在 GCP Console / gcloud 都可）
-gcloud run jobs execute dbt-daily-build \
+gcloud run jobs execute dbt-weekly-build \
   --region="$REGION" \
   --update-env-vars="DBT_VARS={\"measurements_lookback_days\": 30}" \
   --args="build,--target=prod,--vars,{measurements_lookback_days: 30},--profiles-dir=/workspace/weather_data_dbt/profiles"
 
 # 2. 若是 schema breaking change（加欄位、改型別），需要 full-refresh
-gcloud run jobs execute dbt-daily-build \
+gcloud run jobs execute dbt-weekly-build \
   --region="$REGION" \
   --args="build,--full-refresh,--select,fct_measurements_hourly+,--target=prod,--profiles-dir=/workspace/weather_data_dbt/profiles"
 ```
