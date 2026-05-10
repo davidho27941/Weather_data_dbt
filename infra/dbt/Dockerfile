@@ -11,16 +11,33 @@
 #   docker tag dbt-weather:$TAG $REGION-docker.pkg.dev/$PROJECT/dbt/dbt-weather:$TAG
 #   docker push $REGION-docker.pkg.dev/$PROJECT/dbt/dbt-weather:$TAG
 
-FROM ghcr.io/dbt-labs/dbt-bigquery:1.8.latest
+# dbt installed via pip rather than via a pre-built dbt-labs image:
+#   - pinned to the same 1.11.x as the local uv venv + GHA CI (the
+#     committed package-lock.yml is 1.11-shaped)
+#   - mirrors the install path the dbt_ci.yml / build_dbt_docs.yml
+#     workflows use, so behavior is identical between CI and Cloud Run
+#   - ghcr.io/dbt-labs/dbt-bigquery's tagging is inconsistent and several
+#     `1.x.latest` tags 403 on anonymous pull
+FROM python:3.11-slim
 
-# dbt-bigquery image runs as root by default; that's fine for Cloud Run Jobs.
+RUN pip install --no-cache-dir \
+      'dbt-core>=1.11,<1.12' \
+      'dbt-bigquery>=1.11,<1.12'
+
 WORKDIR /workspace
 
-# Copy project + profile in
+# Copy project in
 COPY weather_data_dbt/ ./weather_data_dbt/
 
-# Install package dependencies into the image.
 WORKDIR /workspace/weather_data_dbt
+
+# profiles/profiles.yml is gitignored (each dev's local file); the image
+# materializes it from the committed example template at build time. The
+# example uses env_var() throughout and contains no secrets — every project /
+# dataset / location is overridable via Cloud Run Job env vars.
+RUN cp profiles/profiles.example.yml profiles/profiles.yml
+
+# Install package dependencies (dbt_utils) into the image.
 RUN dbt deps \
     --profiles-dir /workspace/weather_data_dbt/profiles
 
