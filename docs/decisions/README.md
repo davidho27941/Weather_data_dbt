@@ -1,8 +1,6 @@
 # Design decisions
 
-Short notes about decisions that aren't obvious from reading the code,
-and where the alternatives considered and the rejection reasons would
-otherwise be lost. Written as needed, not on a schedule.
+Short notes about decisions that aren't obvious from reading the code, and where the alternatives considered and the rejection reasons would otherwise be lost. Written as needed, not on a schedule.
 
 Format is intentionally lightweight:
 
@@ -26,21 +24,13 @@ supersedes the old one and update the old one's Status.
 
 ## Why only three
 
-Most decisions in this project are either obvious (GCP, BigQuery, dbt —
-standard tools) or already documented in PR descriptions. These three
-are kept here because:
+Most decisions in this project are either obvious (GCP, BigQuery, dbt — standard tools) or already documented in PR descriptions. These three are kept here because:
 
-- **001** explains a non-obvious choice (storing sentinels as STRING
-  rather than nulling them at ingest) that constrains everything
-  downstream.
-- **002** explains the dual-column raw + cleaned pattern, which is the
-  most distinctive piece of staging in this repo.
-- **003** is forward-looking — written before the implementation PR so
-  the design discussion isn't buried under column-by-column type review.
+- **001** explains a non-obvious choice (storing sentinels as STRING rather than nulling them at ingest) that constrains everything downstream.
+- **002** explains the dual-column raw + cleaned pattern, which is the most distinctive piece of staging in this repo.
+- **003** is forward-looking — written before the implementation PR so the design discussion isn't buried under column-by-column type review.
 
-For the broader v2 design narrative see
-[`../redesign_proposal.md`](../redesign_proposal.md). PR descriptions
-in git history hold what-and-why for individual changes.
+For the broader v2 design narrative see [`../redesign_proposal.md`](../redesign_proposal.md). PR descriptions in git history hold what-and-why for individual changes.
 
 ## Template
 
