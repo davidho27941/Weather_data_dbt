@@ -142,6 +142,8 @@ dbt docs are auto-published to GitHub Pages on every push to `main`:
   - PR #3 — dbt rewrite for BigQuery, three Cloud Run Jobs (bronze daily, dbt weekly, dbt freshness hourly) wired with Cloud Scheduler triggers, GHA CI/CD.
   - PR #4 — Cloud Monitoring email alert on Cloud Run Job execution failures.
   - PR #5 — Terraform IaC for everything in PR #3 + PR #4 (single root in [`terraform/`](terraform/), state in `gs://weather-pipeline-tfstate`). Source of truth flips from shell scripts to `terraform apply`.
+  - PR #6 — Crawler GCS bucket imported into Terraform with a tiered lifecycle (Standard → Nearline 30d → Coldline 90d → Archive 365d, no delete). `prevent_destroy = true` on the bucket to keep destroy a two-commit operation.
+  - PR #7 — Data quality + observability hardening. Expanded dbt tests (relationships, accepted_range on all numeric measurement columns, sentinel-translation invariant, row-count anomaly via z-score), new log-based metric + alert policy for dbt severity=error failures, single `Weather pipeline health` Cloud Monitoring dashboard, [`docs/slo.md`](docs/slo.md) for explicit SLO targets.
 
 ## Future work
 

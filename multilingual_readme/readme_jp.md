@@ -147,6 +147,8 @@ dbt ドキュメントは `main` への push のたびに GitHub Pages へ自動
   - PR #3 — BigQuery 向け dbt 書き換え、3 つの Cloud Run Job（bronze daily / dbt weekly / dbt freshness hourly）+ Cloud Scheduler トリガー、GHA CI/CD。
   - PR #4 — Cloud Run Job 実行失敗を検知する Cloud Monitoring email アラート。
   - PR #5 — PR #3 + PR #4 の全成果物を Terraform 化（[`terraform/`](../terraform/) の単一 root、state は `gs://weather-pipeline-tfstate`）。真実の単一情報源がシェルスクリプトから `terraform apply` に切り替わる。
+  - PR #6 — クローラー GCS bucket を Terraform に import し、多段ライフサイクル（Standard → Nearline 30 日 → Coldline 90 日 → Archive 365 日、削除なし）を追加。Bucket には `prevent_destroy = true` を設定し、削除は 2 コミット必須の操作にする。
+  - PR #7 — データ品質 + Observability の強化。dbt テスト拡充（relationships、全数値測定カラムの accepted_range、sentinel translation invariant、z-score による行数アノマリー）、dbt severity=error 失敗用の log-based metric + アラートポリシー、単一の `Weather pipeline health` Cloud Monitoring ダッシュボード、SLO 明示用の [`docs/slo.md`](../docs/slo.md)。
 
 ## 今後の作業
 
