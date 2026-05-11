@@ -1,194 +1,118 @@
-# Terraform: IaC for the pipeline GCP infrastructure
+# GCS lifecycle: import crawler bucket + tiered archival
 
 ## Summary
 
-Adds a single Terraform root (`terraform/`) that codifies everything the
-shell-script onboarding from PR #3 + PR #4 created in GCP:
+Brings the crawler GCS bucket (`side-project-weather-data`) under
+Terraform management and adds a tiered storage-class lifecycle so
+crawler JSON ages into cheaper tiers automatically:
 
-- 5 service accounts (`dbt-runner`, `bronze-loader`, `scheduler-invoker`, `gha-ci`, `gha-cd`)
-- Artifact Registry repo `dbt`
-- Project / repo / bucket / SA-act-as IAM bindings
-- Three managed BQ datasets (`weather_staging`, `weather_intermediate`, `weather_marts`) + dataset-level IAM
-- Three Cloud Run Jobs (`bronze-daily-load`, `dbt-weekly-build`, `dbt-hourly-freshness`)
-- Three Cloud Scheduler triggers + invoker IAM
-- Email notification channel + Cloud Run Job failure alert policy
+```
+Standard       0 – 30 days     active ingestion + bronze MERGE lookback
+Nearline      30 – 90 days     rare access
+Coldline      90 – 365 days    archival
+Archive       365+ days        forever (no delete action)
+```
 
-State lives in `gs://weather-pipeline-tfstate` (versioning on,
-uniform-bucket-level-access). Bootstrap is one shell script;
-`import.sh` pulls the existing GCP inventory into Terraform state so the
-first `terraform plan` is near-zero diff (no resources are recreated).
+State-class minimums (Nearline 30d, Coldline 90d, Archive 365d) are all
+satisfied by the gaps between transitions — no early-deletion fees.
 
-## Why this is its own PR
+PR #5 left the bucket out of TF scope ("crawler-owned"). That was an
+asymmetry: the IAM binding on the bucket was already TF-managed but the
+bucket itself wasn't. Bringing it in closes that gap so the GCS
+lifecycle is versioned in code, reviewable, and drift-detectable.
 
-PR #3 + PR #4 produced a working pipeline via shell scripts. Those
-scripts are great for "stand it up the first time" but not for
-- diffing intent against reality (drift detection)
-- branching off into a `prod` env (currently all hardcoded staging values)
-- recovering from accidental delete (no source of truth other than git
-  history of shell scripts + live GCP state)
+## Why no `Delete` action
 
-Terraform fills those gaps. We import rather than recreate, so this PR
-is a no-op at apply time — the value is the new ground truth.
+Crawler JSON is the raw input to every bronze backfill we could ever
+want to run. Archive class is ~$0.0012/GB/month — for the crawler's
+~KB-per-file volume the long-tail cost is rounding-error, and the
+optionality of "we can always re-derive bronze from source" is worth
+more than the saved storage cost. If we ever decide to cap retention,
+add a 4th `lifecycle_rule` with `action.type = "Delete"`; nothing about
+the current schedule blocks that.
 
-## Out of scope
+## Why bucket goes under TF (not lifecycle-only)
 
-- **GHA secrets / variables.** Adding the GitHub provider would put a
-  PAT in tfstate; not worth the trade-off at this scope. Continue
-  managing the two `GCP_SA_KEY_*` secrets manually per
-  [`.github/workflows/README.md`](.github/workflows/README.md).
-- **SA JSON keys for `gha-ci` / `gha-cd`.** Keys never live in tfstate.
-  Continue creating them manually.
-- **`weather_raw` dataset itself.** Only IAM is TF-managed; the dataset
-  is owned by the bronze layer's bulk-load history.
-- **The crawler GCS bucket itself.** Only the `bronze-loader` viewer
-  binding is TF-managed.
-- **`weather_dev_*` and `weather_ci_*` datasets.** Created on demand by
-  dbt; ephemeral / per-developer.
+GCS doesn't expose lifecycle as a separate resource — it's a nested
+block on `google_storage_bucket`. So managing lifecycle in TF requires
+managing the bucket. The alternatives — leaving lifecycle out of TF and
+using `gcloud storage buckets update --lifecycle-file=...` — would
+break the source-of-truth principle PR #5 established, and reintroduce
+shell-script drift.
 
-## Design notes that surfaced during import
+## Blast-radius protection
 
-A few non-obvious patterns landed after `terraform import` actually ran
-against live state:
+`lifecycle { prevent_destroy = true }` on the bucket resource. The
+bucket holds every raw payload the pipeline has ever ingested; an
+accidental `terraform destroy` (or a config edit that removed the
+resource block) would otherwise drop it all. With the flag set, TF
+refuses the destroy until the flag is explicitly flipped to `false` in
+a dedicated commit. Removal-on-purpose is therefore a two-commit
+operation.
 
-- **String interpolation everywhere instead of cross-resource refs.**
-  `terraform import` evaluates dependent expressions per imported
-  instance, and during early imports the SA collection only carries the
-  one key being imported, so `google_service_account.sas[X].email`
-  references error out (`Invalid index ... is object with 1 attribute`).
-  All IAM bindings / Job runtime SA fields are constructed as plain
-  strings (`"X@${var.project}.iam.gserviceaccount.com"`) — TF still
-  creates SAs first via apply ordering, just without the attribute
-  lookup.
+## Import is a no-op for data and config
 
-- **Static `for_each` only.** `for_each = google_bigquery_dataset.managed`
-  errors out as "known only after apply" during incremental import.
-  Switched to `toset(local.managed_datasets)` (a static string list)
-  with `depends_on` for ordering — same import-resilience reason.
+`terraform plan` after import yields:
 
-- **Explicit `retry_config` on Cloud Schedulers.** The provider returns
-  a defaulted `retry_config` block on every refresh; if TF doesn't
-  declare one, it wants to "remove" the block on every plan, producing
-  eternal drift. Declared with the API defaults
-  (`retry_count = 0` = no Scheduler-level retry; the Cloud Run Job has
-  its own `max_retries` per Job).
+```
+Plan: 0 to add, 1 to change, 0 to destroy.
 
-- **`.terraform.lock.hcl` is committed.** Pins provider versions across
-  workstations / CI, same role as `package-lock.yml` for dbt.
+  # google_storage_bucket.crawler will be updated in-place
+  ~ resource "google_storage_bucket" "crawler" {
+      ~ terraform_labels = { + "goog-terraform-provisioned" = "true" }
+      + lifecycle_rule { ... STANDARD → NEARLINE @ 30d  }
+      + lifecycle_rule { ... NEARLINE → COLDLINE @ 90d  }
+      + lifecycle_rule { ... COLDLINE → ARCHIVE  @ 365d }
+    }
+```
 
-## Image-tag drift handling
-
-The three Cloud Run Jobs use `lifecycle.ignore_changes` on the
-container image attribute. GHA's `dbt_cd.yml` / `bq_cd.yml` workflows
-roll image tags on every main push touching `weather_data_dbt/**` or
-`infra/{dbt,bq}/**`. If Terraform asserted a fixed tag, every CD run
-would create perpetual drift; the lifecycle block opts out cleanly so
-both systems coexist.
-
-Cron schedules are exposed as `var.schedules` — change the cron, re-plan,
-re-apply, no other surface to touch.
+- No object data is touched.
+- The `terraform_labels` line is a TF-state-only update: the
+  `goog-terraform-provisioned=true` label was already on the bucket
+  (set by some prior tool); apply just records that TF now manages it.
+- The three new lifecycle rules begin governing object aging from the
+  apply forward; objects already older than the thresholds will
+  transition in the next nightly GCS sweep, no manual action required.
 
 ## Changes
 
-### `terraform/`
-
-| File | Purpose |
+| File | Change |
 |---|---|
-| [`README.md`](terraform/README.md) | Bootstrap + import + apply runbook + role requirements |
-| [`versions.tf`](terraform/versions.tf) | `required_version >= 1.6.0`; google provider `~> 6.0` |
-| [`backend.tf`](terraform/backend.tf) | GCS backend on `weather-pipeline-tfstate` |
-| [`providers.tf`](terraform/providers.tf) | google provider with project / region defaults |
-| [`variables.tf`](terraform/variables.tf) | project, region, ar_repo, gcs_bucket, alert_email, schedules |
-| [`terraform.tfvars.example`](terraform/terraform.tfvars.example) | Copy-and-edit template |
-| [`locals.tf`](terraform/locals.tf) | Computed values shared across files |
-| [`service_accounts.tf`](terraform/service_accounts.tf) | The 5 managed SAs with descriptions |
-| [`artifact_registry.tf`](terraform/artifact_registry.tf) | The `dbt` AR repo |
-| [`iam.tf`](terraform/iam.tf) | Project / repo / bucket / act-as bindings |
-| [`bigquery.tf`](terraform/bigquery.tf) | 3 managed datasets + dataset-level IAM (incl. weather_raw read/write grants) |
-| [`cloud_run_jobs.tf`](terraform/cloud_run_jobs.tf) | 3 Cloud Run Jobs with image-tag drift suppression |
-| [`cloud_scheduler.tf`](terraform/cloud_scheduler.tf) | 3 Schedulers + invoker IAM |
-| [`monitoring.tf`](terraform/monitoring.tf) | Email channel + cloud-run-job-failure alert policy |
-| [`outputs.tf`](terraform/outputs.tf) | SA emails, Job names, scheduler names, channel + policy IDs |
-| [`bootstrap/create_state_bucket.sh`](terraform/bootstrap/create_state_bucket.sh) | One-time idempotent state bucket setup |
-| [`import.sh`](terraform/import.sh) | `terraform import` for the existing PR #3 + #4 inventory |
-| [`.gitignore`](terraform/.gitignore) | `.terraform/`, `*.tfstate*`, `terraform.tfvars`, `tfplan` |
+| [`terraform/storage.tf`](terraform/storage.tf) | New: `google_storage_bucket.crawler` with three `lifecycle_rule` blocks and `prevent_destroy = true` |
+| [`terraform/import.sh`](terraform/import.sh) | Added `terraform import google_storage_bucket.crawler ${PROJECT}/${GCS_BUCKET}`; removed the bucket from the "NOT imported" comment block |
+| [`terraform/README.md`](terraform/README.md) | Crawler bucket row added to the managed-resources table, removed from "Out of scope"; new section explaining `prevent_destroy` |
+| [`README.md`](README.md) + [`multilingual_readme/readme_jp.md`](multilingual_readme/readme_jp.md) | Repository layout + Future work updated |
 
 ## Test plan
 
-Bootstrap + tfvars:
+- [x] `terraform init` — clean.
+- [x] `terraform import google_storage_bucket.crawler "${PROJECT}/${GCS_BUCKET}"` — successful.
+- [x] `terraform plan` — exactly `Plan: 0 to add, 1 to change, 0 to destroy`
+      with only the three lifecycle_rule additions + the cosmetic
+      `terraform_labels` row in the diff. No recreation, no destroy.
+- [ ] `terraform plan -out=tfplan && terraform apply tfplan`.
+- [ ] `terraform plan` again — should print `No changes`.
+- [ ] `gcloud storage buckets describe gs://side-project-weather-data --format='value(lifecycle)'`
+      shows the three rules.
+- [ ] (Optional, after enough wall-clock time has passed) Spot-check
+      `gsutil ls -L gs://side-project-weather-data/dt=2025-12-* | grep "Storage class"`
+      shows objects transitioning to NEARLINE / COLDLINE as the age
+      thresholds fire.
 
-- [ ] `cd terraform && ./bootstrap/create_state_bucket.sh` — succeeds
-      whether the bucket exists or not.
-- [ ] `cp terraform.tfvars.example terraform.tfvars`, edit `alert_email`.
-- [ ] `terraform init` — connects to GCS backend cleanly.
+## Out of scope
 
-Pre-import GRANT prerequisite (dataset-level bindings that the original
-shell setup never created — TF requires the binding to exist for import
-to succeed):
-
-- [ ] Run these four `GRANT` statements once, then proceed to import.
-      Each is idempotent and harmless when re-run. dbt-runner is already
-      OWNER of the three managed datasets via creator privilege; the
-      explicit `dataEditor` is for TF tracking.
-      ```bash
-      PROJECT=side-project-staging
-      for DS in weather_staging weather_intermediate weather_marts; do
-        bq query --use_legacy_sql=false --location=asia-east1 "
-          GRANT \`roles/bigquery.dataEditor\`
-          ON SCHEMA \`${PROJECT}.${DS}\`
-          TO 'serviceAccount:dbt-runner@${PROJECT}.iam.gserviceaccount.com'
-        "
-      done
-      bq query --use_legacy_sql=false --location=asia-east1 "
-        GRANT \`roles/bigquery.dataViewer\`
-        ON SCHEMA \`${PROJECT}.weather_raw\`
-        TO 'serviceAccount:gha-ci@${PROJECT}.iam.gserviceaccount.com'
-      "
-      ```
-
-Import + plan:
-
-- [ ] `ALERT_EMAIL=davidho.prime@gmail.com ./import.sh` — re-runnable;
-      already-imported lines log "skipped" rather than error.
-- [ ] If the email channel import logs `Channel ID: ` (empty), the
-      gcloud filter for `labels.email_address` didn't match in your
-      gcloud version. Look up the channel ID in the
-      [Console](https://console.cloud.google.com/monitoring/alerting/notifications)
-      and import directly:
-      `terraform import google_monitoring_notification_channel.email projects/.../notificationChannels/<ID>`
-- [ ] `terraform plan` — output is `Plan: 0 to add, N to change, 0 to destroy`.
-      Resource recreation (`X to add, Y to destroy`) is not acceptable.
-      The `N to change` should be cosmetic only (descriptions, user_labels).
-- [ ] Inspect each `~ ... will be updated in-place` block. If anything
-      semantically meaningful drifts (image tag → wrong, schedule cron →
-      wrong, IAM member → wrong), iterate on the `.tf` until plan is clean
-      **before** any `terraform apply`.
-
-Apply + verification:
-
-- [ ] `terraform plan -out=tfplan` then `terraform apply tfplan`.
-- [ ] Re-run `terraform plan` — should now print `No changes`. If anything
-      still drifts, that's an eternal-drift loop and needs a fix in `.tf`
-      (typical culprit: provider-defaulted block not declared).
-- [ ] Sanity test the live system still works: trigger a freshness Job
-      manually (`gcloud run jobs execute dbt-hourly-freshness ...`) and
-      confirm normal `PASS` result + no false alert.
-
-## What is NOT in this PR
-
-Tracked under "Future work" in [`README.md`](README.md):
-
-- Webhook (Discord / Slack / Pub-Sub) notification channel + freshness
-  wrapper for granular per-source alerts.
-- Cloud Monitoring dashboards for pipeline health.
-- BQ data-quality monitoring (e.g.
-  [`elementary-data`](https://github.com/elementary-data/elementary)).
-- Workload Identity Federation for GitHub Actions, replacing the two
-  `GCP_SA_KEY_*` secrets.
-- Removing legacy Airflow / Snowflake artifacts (`dags/`, root
-  `Dockerfile`, `images/`).
+- `Delete` action — see "Why no Delete action" above.
+- Object versioning — not enabled today; not enabled by this PR.
+- CMEK / per-object retention — not required for crawler data sensitivity.
+- The dbt-managed `weather_*` datasets and the `weather_raw` dataset are
+  unchanged by this PR.
 
 ## References
 
-- Design doc: [`docs/redesign_proposal.md`](docs/redesign_proposal.md)
-  §13.6 (Terraform draft) — this PR is the realized version.
-- Branch: `feat/iac` → `main`
+- Future work item this PR closes:
+  [`README.md` § Future work](../README.md#future-work) →
+  "GCS lifecycle policy on the crawler bucket"
+- Bucket settings observed pre-import:
+  `gcloud storage buckets describe gs://side-project-weather-data`
+  (ASIA-EAST1, STANDARD default class, UBLA off, 7-day soft delete).
+- Branch: `feat/gcs-lifecycle` → `main`

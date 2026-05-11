@@ -9,6 +9,7 @@ shell scripts:
 | Artifact Registry repo `dbt` | [`artifact_registry.tf`](artifact_registry.tf) |
 | Project / repo / bucket / act-as IAM | [`iam.tf`](iam.tf) |
 | Three managed BQ datasets (`weather_staging`, `weather_intermediate`, `weather_marts`) + dataset-level IAM (incl. `weather_raw` viewer/editor grants) | [`bigquery.tf`](bigquery.tf) |
+| Crawler GCS bucket `side-project-weather-data` (settings + Standard→Nearline→Coldline→Archive lifecycle) | [`storage.tf`](storage.tf) |
 | Three Cloud Run Jobs (`bronze-daily-load`, `dbt-weekly-build`, `dbt-hourly-freshness`) | [`cloud_run_jobs.tf`](cloud_run_jobs.tf) |
 | Three Cloud Scheduler triggers + invoker IAM | [`cloud_scheduler.tf`](cloud_scheduler.tf) |
 | Email notification channel + Cloud Run Job failure alert policy | [`monitoring.tf`](monitoring.tf) |
@@ -22,8 +23,6 @@ shell scripts:
   [`../.github/workflows/README.md`](../.github/workflows/README.md).
 - `weather_raw` dataset itself — only IAM is TF-managed. The dataset is
   owned by the bronze layer's bulk-load history.
-- GCS bucket `side-project-weather-data` itself — only IAM is TF-managed.
-  The bucket is crawler-owned.
 - `weather_dev_*` and `weather_ci_*` datasets — created on demand by
   dbt and ephemeral / per-developer.
 
@@ -80,6 +79,13 @@ Channel verification status is similarly excluded from drift; clicking
 the verify link out-of-band is what flips it from `UNVERIFIED` to
 `VERIFIED`, not Terraform.
 
+The crawler bucket has `lifecycle { prevent_destroy = true }` because it
+holds every raw payload the pipeline has ever ingested. `terraform
+destroy` (or removing the resource block) will be rejected by TF until
+the flag is flipped to `false` in a dedicated commit. To intentionally
+retire the bucket, do that in two commits: one to flip the flag, one to
+remove the resource — never both in the same PR.
+
 ## What you need on your gcloud account
 
 To run apply locally as your individual user, the following project-level
@@ -112,6 +118,7 @@ terraform/
 ├── artifact_registry.tf
 ├── iam.tf
 ├── bigquery.tf
+├── storage.tf
 ├── cloud_run_jobs.tf
 ├── cloud_scheduler.tf
 ├── monitoring.tf

@@ -79,7 +79,7 @@ for the most recent change set see [`docs/pr_desc.md`](docs/pr_desc.md).
 | Layer | Tool / version |
 |---|---|
 | Crawler | FastAPI on Cloud Run; Python 3.12 |
-| Object storage | GCS (`gs://${GCS_BUCKET}/`, hive-partitioned by `dt=YYYY-MM-DD`) |
+| Object storage | GCS (`gs://${GCS_BUCKET}/`, hive-partitioned by `dt=YYYY-MM-DD`); tiered lifecycle: Standard → Nearline (30d) → Coldline (90d) → Archive (365d), no delete |
 | Warehouse | BigQuery (`asia-east1`, `side-project-staging` / future `side-project-prod`) |
 | Transformation | `dbt-core` 1.11.x · `dbt-bigquery` 1.11.x · `dbt_utils` 1.3.x |
 | Orchestration | Three Cloud Run Jobs + Cloud Scheduler triggers: `bronze-daily-load` (`0 2 * * *`), `dbt-weekly-build` (`30 2 * * 1`), `dbt-hourly-freshness` (`0 * * * *`) |
@@ -139,8 +139,6 @@ dbt docs are auto-published to GitHub Pages on every push to `main`:
 
 - **Workload Identity Federation** for GitHub Actions, replacing the
   two SA-key secrets (eliminates key rotation toil).
-- **GCS lifecycle policy** on the crawler bucket — crawler JSON
-  accumulates indefinitely; tier to Nearline → Coldline → delete.
 - **Webhook alert channel** (Discord / Slack / Pub-Sub) + **freshness wrapper** that posts structured per-source detail. Email channel can't carry granular freshness payloads usefully.
 - **dbt test coverage expansion** + **sqlfluff** lint in PR CI.
 - **Cloud Monitoring dashboards** for pipeline health (Job duration trends, BQ slot consumption, GCS object age).
