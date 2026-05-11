@@ -18,7 +18,6 @@
 #   - GHA secrets / variables          (out of TF scope)
 #   - SA keys for gha-ci / gha-cd      (security: keep keys out of tfstate)
 #   - weather_raw dataset              (only IAM is TF-managed; dataset itself is bronze-owned)
-#   - GCS bucket side-project-weather-data  (only IAM; bucket is crawler-owned)
 #
 set -euo pipefail
 
@@ -80,6 +79,14 @@ done
 run_import \
   "google_artifact_registry_repository_iam_member.gha_cd_writer" \
   "projects/${PROJECT}/locations/${REGION}/repositories/${AR_REPO} roles/artifactregistry.writer serviceAccount:gha-cd@${PROJECT}.iam.gserviceaccount.com"
+
+# --- GCS bucket ----------------------------------------------------------
+# google_storage_bucket ID format: "{project}/{name}"  (project optional;
+# `{name}` alone also works since bucket names are globally unique).
+
+run_import \
+  "google_storage_bucket.crawler" \
+  "${PROJECT}/${GCS_BUCKET}"
 
 # --- GCS bucket IAM ------------------------------------------------------
 
