@@ -78,7 +78,7 @@ for the most recent change set see [`docs/pr_desc.md`](docs/pr_desc.md).
 | [`infra/monitoring/`](infra/monitoring/) | Shell-script onboarding for the Cloud Monitoring email alert policy (now mirrored by Terraform — see below) |
 | [`terraform/`](terraform/) | **Source of truth (PR #5 onward).** Single Terraform root managing SAs, IAM, AR repo, BQ datasets, crawler GCS bucket (with lifecycle), three Cloud Run Jobs, three Schedulers, Cloud Monitoring channel + alert policies + pipeline-health dashboard, log-based metric for dbt test failures. State in `gs://weather-pipeline-tfstate`. |
 | [`.github/workflows/`](.github/workflows/) | GitHub Actions CI (PR validation) + CD (image push, Cloud Run Job rollout) + dbt docs publishing |
-| [`docs/`](docs/) | `redesign_proposal.md` (design doc), `slo.md` (SLOs + response stance), `pr_desc.md` (current PR description) |
+| [`docs/`](docs/) | `redesign_proposal.md` (design doc), [`decisions/`](docs/decisions/) (notes on non-obvious design choices), `slo.md` (SLOs + response stance), `pr_desc.md` (current PR description) |
 | `dags/`, root `Dockerfile` | **Legacy** v1 Airflow + Snowflake; no longer wired into anything. Slated for removal in a follow-up cleanup PR. |
 
 ## Stack
@@ -144,11 +144,15 @@ dbt docs are auto-published to GitHub Pages on every push to `main`:
   - PR #5 — Terraform IaC for everything in PR #3 + PR #4 (single root in [`terraform/`](terraform/), state in `gs://weather-pipeline-tfstate`). Source of truth flips from shell scripts to `terraform apply`.
   - PR #6 — Crawler GCS bucket imported into Terraform with a tiered lifecycle (Standard → Nearline 30d → Coldline 90d → Archive 365d, no delete). `prevent_destroy = true` on the bucket to keep destroy a two-commit operation.
   - PR #7 — Data quality + observability hardening. Expanded dbt tests (relationships, accepted_range on all numeric measurement columns, sentinel-translation invariant, row-count anomaly via z-score), new log-based metric + alert policy for dbt severity=error failures, single `Weather pipeline health` Cloud Monitoring dashboard, [`docs/slo.md`](docs/slo.md) for explicit SLO targets.
+  - PR #8 — Design decision notes under [`docs/decisions/`](docs/decisions/) for three non-obvious choices: STRING-typed bronze sentinels (001), dual-column raw + cleaned staging (002), and a proposal for enforcing dbt contracts on the marts layer (003, `Status: Proposed`). The contract enforcement lands in a separate follow-up PR so the design and the column-by-column implementation get reviewed independently.
 
 ## Future work
 
 - **Workload Identity Federation** for GitHub Actions, replacing the
   two SA-key secrets (eliminates key rotation toil).
+- **Enforce dbt model contracts on the marts layer** — see
+  [decision 003](docs/decisions/003-enforce-dbt-contracts-on-marts.md)
+  for the design; implementation pending.
 - **Webhook alert channel** (Discord / Slack / Pub-Sub) + **freshness wrapper** that posts structured per-source detail. Email channel can't carry granular freshness payloads usefully.
 - **`sqlfluff` lint** in PR CI.
 - **Cost / performance dashboards** — per-model BQ slot consumption, partition scan bytes, scheduled-query cost drill-down.

@@ -82,7 +82,7 @@ ML パイプラインがそれぞれ必要なカラムを選択できます。
 | [`infra/monitoring/`](../infra/monitoring/) | Cloud Monitoring email アラートポリシーのシェルスクリプトベースのオンボーディング（現在は Terraform でも管理 — 下記参照） |
 | [`terraform/`](../terraform/) | **真実の単一情報源（PR #5 以降）。** SA、IAM、AR repo、BQ datasets、クローラー GCS bucket（lifecycle 含む）、3 つの Cloud Run Job、3 つの Scheduler、Cloud Monitoring channel + 複数アラートポリシー + パイプラインヘルスダッシュボード、dbt テスト失敗用の log-based metric を一括で管理する単一の Terraform root。State は `gs://weather-pipeline-tfstate`。 |
 | [`.github/workflows/`](../.github/workflows/) | GitHub Actions：CI（PR 検証）+ CD（イメージ push、Cloud Run Job ロールアウト）+ dbt docs 公開 |
-| [`docs/`](../docs/) | `redesign_proposal.md`（設計ドキュメント）、`slo.md`（SLO と対応方針）、`pr_desc.md`（最新 PR 説明） |
+| [`docs/`](../docs/) | `redesign_proposal.md`（設計ドキュメント）、[`decisions/`](../docs/decisions/)（自明でない設計判断のメモ）、`slo.md`（SLO と対応方針）、`pr_desc.md`（最新 PR 説明） |
 | `dags/`、ルートの `Dockerfile` | **レガシー** v1 Airflow + Snowflake 用。現在は配線されておらず、後続のクリーンアップ PR で削除予定。 |
 
 ## 技術スタック
@@ -149,11 +149,15 @@ dbt ドキュメントは `main` への push のたびに GitHub Pages へ自動
   - PR #5 — PR #3 + PR #4 の全成果物を Terraform 化（[`terraform/`](../terraform/) の単一 root、state は `gs://weather-pipeline-tfstate`）。真実の単一情報源がシェルスクリプトから `terraform apply` に切り替わる。
   - PR #6 — クローラー GCS bucket を Terraform に import し、多段ライフサイクル（Standard → Nearline 30 日 → Coldline 90 日 → Archive 365 日、削除なし）を追加。Bucket には `prevent_destroy = true` を設定し、削除は 2 コミット必須の操作にする。
   - PR #7 — データ品質 + Observability の強化。dbt テスト拡充（relationships、全数値測定カラムの accepted_range、sentinel translation invariant、z-score による行数アノマリー）、dbt severity=error 失敗用の log-based metric + アラートポリシー、単一の `Weather pipeline health` Cloud Monitoring ダッシュボード、SLO 明示用の [`docs/slo.md`](../docs/slo.md)。
+  - PR #8 — [`docs/decisions/`](../docs/decisions/) に自明でない 3 つの設計判断のメモを追加：STRING-typed bronze sentinels（001）、dual-column raw + cleaned staging（002）、marts レイヤーの dbt contract 強制提案（003、`Status: Proposed`）。Contract の実装は別 PR に切り出し、設計レビューとカラム単位の型レビューを独立で行えるようにする。
 
 ## 今後の作業
 
 - **Workload Identity Federation** で GitHub Actions の SA キー
   シークレット 2 本を置き換える（キー輪替の手間を排除）。
+- **marts レイヤーでの dbt model contract 強制** —
+  設計は [decision 003](../docs/decisions/003-enforce-dbt-contracts-on-marts.md)、
+  実装は後続 PR にて。
 - **Webhook 通知チャンネル**（Discord / Slack / Pub-Sub）+ **freshness wrapper** で source ごとの詳細を構造化送信。Email チャンネルは粒度の細かい freshness ペイロードを表示できない。
 - PR CI に **sqlfluff** lint を追加。
 - **コスト / パフォーマンス ダッシュボード** — モデル別 BQ slot 消費、partition スキャンバイト数、scheduled query コストのドリルダウン。
