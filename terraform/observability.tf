@@ -174,7 +174,12 @@ locals {
         },
 
         {
-          title = "BigQuery — slots in use"
+          # On-demand BigQuery is billed per scanned-byte, not per slot-hour,
+          # so slot metrics either have no time series or are misleading.
+          # scanned_bytes_billed is the direct cost signal: bytes the project
+          # got billed for, summed per hour. Multiply by $5/TB to estimate
+          # the marginal cost contribution of any time window.
+          title = "BigQuery — billable bytes scanned (per hour)"
           xyChart = {
             chartOptions = { mode = "COLOR" }
             dataSets = [{
@@ -182,11 +187,11 @@ locals {
               targetAxis = "Y1"
               timeSeriesQuery = {
                 timeSeriesFilter = {
-                  filter = "metric.type=\"bigquery.googleapis.com/slots/total_used\" resource.type=\"bigquery_project\""
+                  filter = "metric.type=\"bigquery.googleapis.com/query/scanned_bytes_billed\" resource.type=\"bigquery_project\""
                   aggregation = {
-                    alignmentPeriod    = "300s"
-                    perSeriesAligner   = "ALIGN_MEAN"
-                    crossSeriesReducer = "REDUCE_MEAN"
+                    alignmentPeriod    = "3600s"
+                    perSeriesAligner   = "ALIGN_DELTA"
+                    crossSeriesReducer = "REDUCE_SUM"
                   }
                 }
               }
