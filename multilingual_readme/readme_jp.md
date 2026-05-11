@@ -50,10 +50,16 @@
               └────────────────────────────────────────────────┘
 ```
 
-3 つの Cloud Run Job（`bronze-daily-load`、`dbt-weekly-build`、
-`dbt-hourly-freshness`）のいずれかがリトライ後も最終的に失敗した場合、
-単一の Cloud Monitoring アラートポリシー → email 通知チャンネルが
-発火します。
+2 つの Cloud Monitoring アラートポリシーが email 通知チャンネルへ
+発火します。1 つ目は 3 つの Cloud Run Job のいずれかがリトライ後も
+最終的に失敗した場合、2 つ目は log-based metric
+`dbt_test_failure_count` 経由で dbt の severity=error テストが失敗した
+場合に発火します。後者はインフラ系障害と区別された signal を
+on-call に提供します。Cloud Monitoring ダッシュボード
+`Weather pipeline health` には Job 実行結果、dbt テスト失敗数、
+BigQuery slot 使用率、クローラーバケットのストレージティアリングが
+集約されています。SLO の目標値と「ページするか様子を見るか」の判断軸は
+[`docs/slo.md`](../docs/slo.md) を参照してください。
 
 3 つの時間粒度のロールアップ（10 分 / 時 / 日 / 週 / 月）が下流の ML 学習に
 供給され、`dim_stations` はすべての fact テーブルに JOIN されます。
@@ -74,9 +80,9 @@ ML パイプラインがそれぞれ必要なカラムを選択できます。
 | [`weather_data_dbt/`](../weather_data_dbt/) | dbt プロジェクト（BigQuery プロファイル、dev / stg / prod / ci ターゲット） |
 | [`infra/dbt/`](../infra/dbt/) | 2 つの Cloud Run Job（`dbt-weekly-build`、`dbt-hourly-freshness`）用の Dockerfile + スクリプト + Cloud Scheduler トリガー |
 | [`infra/monitoring/`](../infra/monitoring/) | Cloud Monitoring email アラートポリシーのシェルスクリプトベースのオンボーディング（現在は Terraform でも管理 — 下記参照） |
-| [`terraform/`](../terraform/) | **真実の単一情報源（PR #5 以降）。** SA、IAM、AR repo、BQ datasets、3 つの Cloud Run Job、3 つの Scheduler、Cloud Monitoring channel + アラートポリシーを一括で管理する単一の Terraform root。State は `gs://weather-pipeline-tfstate`。 |
+| [`terraform/`](../terraform/) | **真実の単一情報源（PR #5 以降）。** SA、IAM、AR repo、BQ datasets、クローラー GCS bucket（lifecycle 含む）、3 つの Cloud Run Job、3 つの Scheduler、Cloud Monitoring channel + 複数アラートポリシー + パイプラインヘルスダッシュボード、dbt テスト失敗用の log-based metric を一括で管理する単一の Terraform root。State は `gs://weather-pipeline-tfstate`。 |
 | [`.github/workflows/`](../.github/workflows/) | GitHub Actions：CI（PR 検証）+ CD（イメージ push、Cloud Run Job ロールアウト）+ dbt docs 公開 |
-| [`docs/`](../docs/) | `redesign_proposal.md`（設計ドキュメント）と `pr_desc.md`（最新 PR 説明） |
+| [`docs/`](../docs/) | `redesign_proposal.md`（設計ドキュメント）、`slo.md`（SLO と対応方針）、`pr_desc.md`（最新 PR 説明） |
 | `dags/`、ルートの `Dockerfile` | **レガシー** v1 Airflow + Snowflake 用。現在は配線されておらず、後続のクリーンアップ PR で削除予定。 |
 
 ## 技術スタック
@@ -88,7 +94,8 @@ ML パイプラインがそれぞれ必要なカラムを選択できます。
 | データウェアハウス | BigQuery（`asia-east1`、`side-project-staging` / 将来的に `side-project-prod`） |
 | 変換 | `dbt-core` 1.11.x · `dbt-bigquery` 1.11.x · `dbt_utils` 1.3.x |
 | オーケストレーション | 3 つの Cloud Run Job + Cloud Scheduler トリガー：`bronze-daily-load`（`0 2 * * *`）、`dbt-weekly-build`（`30 2 * * 1`）、`dbt-hourly-freshness`（`0 * * * *`） |
-| アラート | 上記 3 ジョブの `run.googleapis.com/job/completed_execution_count{result=failed}` を監視する Cloud Monitoring email アラートポリシー |
+| アラート | Cloud Monitoring email アラートポリシー 2 本：(1) Cloud Run Job のリトライ枯渇失敗、(2) log-based metric `dbt_test_failure_count` 経由の dbt severity=error テスト失敗。同じ TF root にパイプラインヘルスダッシュボードも管理。 |
+| データ品質 | 全モデルに dbt テスト：`not_null` / `unique` / `accepted_values` / `accepted_range`（台風耐性のある閾値）/ `unique_combination_of_columns` / `relationships`（severity=warn）；加えて singular test 2 本（sentinel translation invariant：severity=error、行数アノマリー z-score：severity=warn） |
 | CI/CD | GitHub Actions（サービスアカウント JSON キー認証；WIF への移行手順をドキュメント化済み） |
 | IaC | Terraform `~> 6.0` の google provider、[`terraform/`](../terraform/) 単一 root、State は GCS bucket `weather-pipeline-tfstate` |
 
@@ -146,12 +153,12 @@ dbt ドキュメントは `main` への push のたびに GitHub Pages へ自動
 - **Workload Identity Federation** で GitHub Actions の SA キー
   シークレット 2 本を置き換える（キー輪替の手間を排除）。
 - **Webhook 通知チャンネル**（Discord / Slack / Pub-Sub）+ **freshness wrapper** で source ごとの詳細を構造化送信。Email チャンネルは粒度の細かい freshness ペイロードを表示できない。
-- **dbt テストカバレッジの拡充** + PR CI に **sqlfluff** lint を追加。
-- **Cloud Monitoring ダッシュボード**：パイプライン健全性可視化（Job 実行時間、BQ slot 消費、GCS オブジェクトの古さなど）。
+- PR CI に **sqlfluff** lint を追加。
+- **コスト / パフォーマンス ダッシュボード** — モデル別 BQ slot 消費、partition スキャンバイト数、scheduled query コストのドリルダウン。
 - **Renovate / Dependabot** で dbt-core / dbt-bigquery / SDK / ベースイメージの自動更新。
 - **BQ データ品質モニタリング**（dbt artifacts に
   [`elementary-data`](https://github.com/elementary-data/elementary)
-  を被せるなど）。
+  を被せるなど） — 現状の singular anomaly test を将来的に置き換える想定。
 - **prod 環境** — `terraform/envs/{staging,prod}/` に分割、`side-project-prod` を立ち上げ。
 - **Terraform apply の GHA 化** + PR review ゲート（現状は `apply` がワークステーション操作）。
 - **レガシーな Airflow / Snowflake 関連成果物の削除**（`dags/`、ルート

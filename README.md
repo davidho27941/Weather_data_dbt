@@ -47,9 +47,16 @@ GCP-native architecture (GCS + BigQuery + dbt + Cloud Run).
               └────────────────────────────────────────────────┘
 ```
 
-Any of the three Cloud Run Jobs (`bronze-daily-load`, `dbt-weekly-build`,
-`dbt-hourly-freshness`) failing a retry-exhausted execution fires a
-single Cloud Monitoring alert policy → email notification channel.
+Two Cloud Monitoring alert policies feed the email notification channel:
+one fires on any Cloud Run Job retry-exhausted failure
+(`bronze-daily-load` / `dbt-weekly-build` / `dbt-hourly-freshness`); a
+second fires specifically on dbt severity=error test failures via a
+log-based metric, narrowing the on-call signal away from infra-class
+failures. A `Weather pipeline health` Cloud Monitoring dashboard
+surfaces Job execution by result, dbt test failures, BQ slot
+utilisation, and crawler-bucket storage tiering. SLO targets and the
+paging-vs-investigate stance live in
+[`docs/slo.md`](docs/slo.md).
 
 Three time-grain rollups feed downstream ML training; `dim_stations`
 joins into every fact table. Sentinel-bearing measurement fields
@@ -69,9 +76,9 @@ for the most recent change set see [`docs/pr_desc.md`](docs/pr_desc.md).
 | [`weather_data_dbt/`](weather_data_dbt/) | dbt project (BigQuery profile, dev / stg / prod / ci targets) |
 | [`infra/dbt/`](infra/dbt/) | Dockerfile + scripts for the two Cloud Run Jobs (`dbt-weekly-build`, `dbt-hourly-freshness`) and their Cloud Scheduler triggers |
 | [`infra/monitoring/`](infra/monitoring/) | Shell-script onboarding for the Cloud Monitoring email alert policy (now mirrored by Terraform — see below) |
-| [`terraform/`](terraform/) | **Source of truth (PR #5 onward).** Single Terraform root managing SAs, IAM, AR repo, BQ datasets, three Cloud Run Jobs, three Schedulers, and the Cloud Monitoring channel + alert policy. State in `gs://weather-pipeline-tfstate`. |
+| [`terraform/`](terraform/) | **Source of truth (PR #5 onward).** Single Terraform root managing SAs, IAM, AR repo, BQ datasets, crawler GCS bucket (with lifecycle), three Cloud Run Jobs, three Schedulers, Cloud Monitoring channel + alert policies + pipeline-health dashboard, log-based metric for dbt test failures. State in `gs://weather-pipeline-tfstate`. |
 | [`.github/workflows/`](.github/workflows/) | GitHub Actions CI (PR validation) + CD (image push, Cloud Run Job rollout) + dbt docs publishing |
-| [`docs/`](docs/) | `redesign_proposal.md` (design doc) and `pr_desc.md` (current PR description) |
+| [`docs/`](docs/) | `redesign_proposal.md` (design doc), `slo.md` (SLOs + response stance), `pr_desc.md` (current PR description) |
 | `dags/`, root `Dockerfile` | **Legacy** v1 Airflow + Snowflake; no longer wired into anything. Slated for removal in a follow-up cleanup PR. |
 
 ## Stack
@@ -83,7 +90,8 @@ for the most recent change set see [`docs/pr_desc.md`](docs/pr_desc.md).
 | Warehouse | BigQuery (`asia-east1`, `side-project-staging` / future `side-project-prod`) |
 | Transformation | `dbt-core` 1.11.x · `dbt-bigquery` 1.11.x · `dbt_utils` 1.3.x |
 | Orchestration | Three Cloud Run Jobs + Cloud Scheduler triggers: `bronze-daily-load` (`0 2 * * *`), `dbt-weekly-build` (`30 2 * * 1`), `dbt-hourly-freshness` (`0 * * * *`) |
-| Alerting | Cloud Monitoring email alert policy on `run.googleapis.com/job/completed_execution_count{result=failed}` for the three jobs above |
+| Alerting | Cloud Monitoring email alert policies: (1) any Cloud Run Job retry-exhausted failure, (2) dbt severity=error test failure via log-based metric `dbt_test_failure_count`. Pipeline-health dashboard in the same TF root. |
+| Data quality | dbt tests on every model: `not_null` / `unique` / `accepted_values` / `accepted_range` (typhoon-tolerant bounds) / `unique_combination_of_columns` / `relationships` (severity=warn); plus singular tests for sentinel-translation invariant (severity=error) and row-count anomaly via z-score (severity=warn) |
 | CI/CD | GitHub Actions (auth via service-account JSON keys; WIF migration documented) |
 | IaC | Terraform `~> 6.0` google provider, single root in [`terraform/`](terraform/), state in GCS bucket `weather-pipeline-tfstate` |
 
@@ -140,11 +148,11 @@ dbt docs are auto-published to GitHub Pages on every push to `main`:
 - **Workload Identity Federation** for GitHub Actions, replacing the
   two SA-key secrets (eliminates key rotation toil).
 - **Webhook alert channel** (Discord / Slack / Pub-Sub) + **freshness wrapper** that posts structured per-source detail. Email channel can't carry granular freshness payloads usefully.
-- **dbt test coverage expansion** + **sqlfluff** lint in PR CI.
-- **Cloud Monitoring dashboards** for pipeline health (Job duration trends, BQ slot consumption, GCS object age).
+- **`sqlfluff` lint** in PR CI.
+- **Cost / performance dashboards** — per-model BQ slot consumption, partition scan bytes, scheduled-query cost drill-down.
 - **Renovate / Dependabot** for dbt-core / dbt-bigquery / SDK / base-image bumps.
 - **BQ data-quality monitoring** (e.g. [`elementary-data`](https://github.com/elementary-data/elementary)
-  layered on dbt artifacts).
+  layered on dbt artifacts) — would supersede the per-singular-test anomaly checks.
 - **prod environment** — split `terraform/envs/{staging,prod}/`, stand up `side-project-prod`.
 - **Terraform apply via GHA** with PR review gates (currently `apply` is a workstation operation).
 - **Removing legacy Airflow / Snowflake artifacts** (`dags/`, root
