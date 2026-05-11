@@ -73,7 +73,8 @@ ML パイプラインがそれぞれ必要なカラムを選択できます。
 | [`infra/bq/`](../infra/bq/) | Bronze 層：スキーマファイル、一括ロードスクリプト、`bronze-daily-load` Cloud Run Job（Dockerfile + deploy + scheduler スクリプト） |
 | [`weather_data_dbt/`](../weather_data_dbt/) | dbt プロジェクト（BigQuery プロファイル、dev / stg / prod / ci ターゲット） |
 | [`infra/dbt/`](../infra/dbt/) | 2 つの Cloud Run Job（`dbt-weekly-build`、`dbt-hourly-freshness`）用の Dockerfile + スクリプト + Cloud Scheduler トリガー |
-| [`infra/monitoring/`](../infra/monitoring/) | Cloud Run Job 実行失敗を検知する Cloud Monitoring email アラートポリシー |
+| [`infra/monitoring/`](../infra/monitoring/) | Cloud Monitoring email アラートポリシーのシェルスクリプトベースのオンボーディング（現在は Terraform でも管理 — 下記参照） |
+| [`terraform/`](../terraform/) | **真実の単一情報源（PR #5 以降）。** SA、IAM、AR repo、BQ datasets、3 つの Cloud Run Job、3 つの Scheduler、Cloud Monitoring channel + アラートポリシーを一括で管理する単一の Terraform root。State は `gs://weather-pipeline-tfstate`。 |
 | [`.github/workflows/`](../.github/workflows/) | GitHub Actions：CI（PR 検証）+ CD（イメージ push、Cloud Run Job ロールアウト）+ dbt docs 公開 |
 | [`docs/`](../docs/) | `redesign_proposal.md`（設計ドキュメント）と `pr_desc.md`（最新 PR 説明） |
 | `dags/`、ルートの `Dockerfile` | **レガシー** v1 Airflow + Snowflake 用。現在は配線されておらず、後続のクリーンアップ PR で削除予定。 |
@@ -89,6 +90,7 @@ ML パイプラインがそれぞれ必要なカラムを選択できます。
 | オーケストレーション | 3 つの Cloud Run Job + Cloud Scheduler トリガー：`bronze-daily-load`（`0 2 * * *`）、`dbt-weekly-build`（`30 2 * * 1`）、`dbt-hourly-freshness`（`0 * * * *`） |
 | アラート | 上記 3 ジョブの `run.googleapis.com/job/completed_execution_count{result=failed}` を監視する Cloud Monitoring email アラートポリシー |
 | CI/CD | GitHub Actions（サービスアカウント JSON キー認証；WIF への移行手順をドキュメント化済み） |
+| IaC | Terraform `~> 6.0` の google provider、[`terraform/`](../terraform/) 単一 root、State は GCS bucket `weather-pipeline-tfstate` |
 
 ## 環境
 
@@ -137,16 +139,22 @@ dbt ドキュメントは `main` への push のたびに GitHub Pages へ自動
   - PR #2 — BigQuery に bronze 層（`weather_raw.*`）を導入。一括ロード + 日次 MERGE。
   - PR #3 — BigQuery 向け dbt 書き換え、3 つの Cloud Run Job（bronze daily / dbt weekly / dbt freshness hourly）+ Cloud Scheduler トリガー、GHA CI/CD。
   - PR #4 — Cloud Run Job 実行失敗を検知する Cloud Monitoring email アラート。
+  - PR #5 — PR #3 + PR #4 の全成果物を Terraform 化（[`terraform/`](../terraform/) の単一 root、state は `gs://weather-pipeline-tfstate`）。真実の単一情報源がシェルスクリプトから `terraform apply` に切り替わる。
 
 ## 今後の作業
 
-- **Terraform** 化：SA / IAM / Artifact Registry / Cloud Run Jobs / Scheduler / monitoring policy（現状は全てシェルスクリプト経由で作成）。
+- **Workload Identity Federation** で GitHub Actions の SA キー
+  シークレット 2 本を置き換える（キー輪替の手間を排除）。
+- **GCS lifecycle policy** をクローラーのバケットに追加 —
+  crawler の JSON は無制限に蓄積する；Nearline → Coldline → 削除のティアリングを設定。
 - **Webhook 通知チャンネル**（Discord / Slack / Pub-Sub）+ **freshness wrapper** で source ごとの詳細を構造化送信。Email チャンネルは粒度の細かい freshness ペイロードを表示できない。
+- **dbt テストカバレッジの拡充** + PR CI に **sqlfluff** lint を追加。
 - **Cloud Monitoring ダッシュボード**：パイプライン健全性可視化（Job 実行時間、BQ slot 消費、GCS オブジェクトの古さなど）。
+- **Renovate / Dependabot** で dbt-core / dbt-bigquery / SDK / ベースイメージの自動更新。
 - **BQ データ品質モニタリング**（dbt artifacts に
   [`elementary-data`](https://github.com/elementary-data/elementary)
   を被せるなど）。
-- **Workload Identity Federation** で GitHub Actions の SA キー
-  シークレット 2 本を置き換える。
+- **prod 環境** — `terraform/envs/{staging,prod}/` に分割、`side-project-prod` を立ち上げ。
+- **Terraform apply の GHA 化** + PR review ゲート（現状は `apply` がワークステーション操作）。
 - **レガシーな Airflow / Snowflake 関連成果物の削除**（`dags/`、ルート
   `Dockerfile`、古いイメージ参照など）。
