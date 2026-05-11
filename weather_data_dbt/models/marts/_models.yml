@@ -185,14 +185,21 @@ models:
       - name: sunshine_duration_10min_raw
         description: Original CWA value (STRING). Only manned stations.
       - name: sunshine_duration_10min
-        description: Cleaned sunshine duration in hours.
-        # Physical maximum in a 10-minute window is 10 min = 1/6 hour
-        # ≈ 0.167. The ceiling is set above that to absorb rounding noise.
+        description: |
+          Sunshine duration in hours as reported at this 10-min observation
+          timestamp. Despite the `_10min` suffix, CWA appears to report
+          cumulative daily sunshine (since local midnight) rather than
+          sunshine within the 10-min bucket itself: observed range 0-12.1h,
+          p50 ~0.1h, p95 ~8.4h. Only manned (有人站) stations populate this.
+        # Ceiling at 24h is generous for daily cumulative hours (physical
+        # max in Taiwan ~14h at summer solstice). Catches sign errors and
+        # scale-of-10 bugs (240h, etc.) without being so tight that
+        # routine sunny days false-alarm.
         tests:
           - dbt_utils.accepted_range:
               arguments:
                 min_value: 0
-                max_value: 0.2
+                max_value: 24
                 inclusive: true
               config:
                 where: sunshine_duration_10min is not null
