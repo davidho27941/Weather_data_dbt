@@ -46,7 +46,15 @@ models:
     columns:
       - name: station_id
         description: CWA station ID.
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_stations')
+                field: station_id
+              # See severity rationale on the rollup facts below.
+              config:
+                severity: warn
       - name: measure_at
         description: Observation timestamp (UTC).
         tests: [not_null]
@@ -80,6 +88,16 @@ models:
         description: Original CWA value (STRING).
       - name: air_pressure
         description: Cleaned station pressure in hPa.
+        # Lower bound covers the lowest pressures ever recorded in Taiwan
+        # (typhoon eye ~870 hPa). Upper bound generously above sea-level max.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 700
+                max_value: 1100
+                inclusive: true
+              config:
+                where: air_pressure is not null
       - name: relative_humidity_raw
         description: Original CWA value (STRING).
       - name: relative_humidity
@@ -96,32 +114,102 @@ models:
         description: Original CWA value (STRING).
       - name: wind_speed
         description: Cleaned mean wind speed in m/s.
+        # Highest sustained wind recorded in Taiwan is ~78 m/s (super typhoon).
+        # 100 leaves headroom without going into clearly-spurious territory.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+                inclusive: true
+              config:
+                where: wind_speed is not null
       - name: wind_direction_raw
         description: Original CWA value (STRING). Sentinels 'X' / '-99' / '990' (calm wind).
       - name: wind_direction
         description: Cleaned mean wind direction in degrees. NULL if sentinel including '990'.
+        # Compass degrees: [0, 360]. We accept 360 inclusive because CWA
+        # encodes due north as 360 in some records (semantically == 0).
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 360
+                inclusive: true
+              config:
+                where: wind_direction is not null
       - name: wind_direction_gust_raw
         description: Original CWA value (STRING).
       - name: wind_direction_gust
         description: Cleaned wind direction at peak gust.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 360
+                inclusive: true
+              config:
+                where: wind_direction_gust is not null
       - name: peak_gust_speed_raw
         description: Original CWA value (STRING).
       - name: peak_gust_speed
         description: Cleaned peak gust speed in m/s.
+        # Gust ceiling sits above sustained-wind ceiling — gusts can be
+        # substantially above mean wind speed in convective storms.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 150
+                inclusive: true
+              config:
+                where: peak_gust_speed is not null
       - name: precipitation_raw
         description: |
           Original CWA value (STRING). Sentinels 'X' / 'T' (trace) / '-99' /
           '-98' (no rain past 6h).
       - name: precipitation
         description: Cleaned precipitation in mm. 'T' and '-98' translated to 0.
+        # 10-min precipitation upper bound: extreme convective cells in
+        # Taiwan's mountains have hit ~100 mm in 10 min historically. 200
+        # leaves headroom while still catching obvious bugs (negative, or
+        # 4-digit values).
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 200
+                inclusive: true
+              config:
+                where: precipitation is not null
       - name: sunshine_duration_10min_raw
         description: Original CWA value (STRING). Only manned stations.
       - name: sunshine_duration_10min
         description: Cleaned sunshine duration in hours.
+        # Physical maximum in a 10-minute window is 10 min = 1/6 hour
+        # ≈ 0.167. The ceiling is set above that to absorb rounding noise.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 0.2
+                inclusive: true
+              config:
+                where: sunshine_duration_10min is not null
       - name: uv_index_raw
         description: Original CWA value (STRING). Only manned stations.
       - name: uv_index
         description: Cleaned UV index.
+        # WHO UV scale tops out at "extreme" = 11+. 20 is well above any
+        # real-world reading; catches sign errors / scale-of-10 bugs.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 20
+                inclusive: true
+              config:
+                where: uv_index is not null
       - name: weather_status_raw
         description: Original weather phenomenon (STRING).
       - name: weather_status
@@ -143,7 +231,20 @@ models:
       (a full hour should have 6 observations at 10-minute cadence).
     columns:
       - name: station_id
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_stations')
+                field: station_id
+              # warn (not error) because dim_stations is the LATEST stations
+              # snapshot from CWA. Historical fct rows may reference a station
+              # that has since been decommissioned and dropped from the
+              # current stations source — a real-world inconsistency, but not
+              # one we want to fail the weekly build on. A persistent warn
+              # signals we need to backfill dim or accept the drop.
+              config:
+                severity: warn
       - name: measure_at
         tests: [not_null]
       - name: observation_count
@@ -164,7 +265,20 @@ models:
       Asia/Taipei. A full day has 144 observations (24 * 6).
     columns:
       - name: station_id
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_stations')
+                field: station_id
+              # warn (not error) because dim_stations is the LATEST stations
+              # snapshot from CWA. Historical fct rows may reference a station
+              # that has since been decommissioned and dropped from the
+              # current stations source — a real-world inconsistency, but not
+              # one we want to fail the weekly build on. A persistent warn
+              # signals we need to backfill dim or accept the drop.
+              config:
+                severity: warn
       - name: measure_at
         tests: [not_null]
       - name: observation_count
@@ -185,7 +299,20 @@ models:
       Week boundary in Asia/Taipei. A full week has 1008 observations.
     columns:
       - name: station_id
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_stations')
+                field: station_id
+              # warn (not error) because dim_stations is the LATEST stations
+              # snapshot from CWA. Historical fct rows may reference a station
+              # that has since been decommissioned and dropped from the
+              # current stations source — a real-world inconsistency, but not
+              # one we want to fail the weekly build on. A persistent warn
+              # signals we need to backfill dim or accept the drop.
+              config:
+                severity: warn
       - name: measure_at
         tests: [not_null]
     data_tests:
@@ -199,7 +326,20 @@ models:
       boundary in Asia/Taipei.
     columns:
       - name: station_id
-        tests: [not_null]
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_stations')
+                field: station_id
+              # warn (not error) because dim_stations is the LATEST stations
+              # snapshot from CWA. Historical fct rows may reference a station
+              # that has since been decommissioned and dropped from the
+              # current stations source — a real-world inconsistency, but not
+              # one we want to fail the weekly build on. A persistent warn
+              # signals we need to backfill dim or accept the drop.
+              config:
+                severity: warn
       - name: measure_at
         tests: [not_null]
     data_tests:
