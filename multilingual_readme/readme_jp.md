@@ -84,7 +84,7 @@ ML パイプラインがそれぞれ必要なカラムを選択できます。
 | レイヤー | ツール / バージョン |
 |---|---|
 | クローラー | Cloud Run 上の FastAPI、Python 3.12 |
-| オブジェクトストレージ | GCS（`gs://${GCS_BUCKET}/`、`dt=YYYY-MM-DD` で hive パーティション） |
+| オブジェクトストレージ | GCS（`gs://${GCS_BUCKET}/`、`dt=YYYY-MM-DD` で hive パーティション）；多段ライフサイクル：Standard → Nearline（30 日）→ Coldline（90 日）→ Archive（365 日）、削除は行わない |
 | データウェアハウス | BigQuery（`asia-east1`、`side-project-staging` / 将来的に `side-project-prod`） |
 | 変換 | `dbt-core` 1.11.x · `dbt-bigquery` 1.11.x · `dbt_utils` 1.3.x |
 | オーケストレーション | 3 つの Cloud Run Job + Cloud Scheduler トリガー：`bronze-daily-load`（`0 2 * * *`）、`dbt-weekly-build`（`30 2 * * 1`）、`dbt-hourly-freshness`（`0 * * * *`） |
@@ -145,8 +145,6 @@ dbt ドキュメントは `main` への push のたびに GitHub Pages へ自動
 
 - **Workload Identity Federation** で GitHub Actions の SA キー
   シークレット 2 本を置き換える（キー輪替の手間を排除）。
-- **GCS lifecycle policy** をクローラーのバケットに追加 —
-  crawler の JSON は無制限に蓄積する；Nearline → Coldline → 削除のティアリングを設定。
 - **Webhook 通知チャンネル**（Discord / Slack / Pub-Sub）+ **freshness wrapper** で source ごとの詳細を構造化送信。Email チャンネルは粒度の細かい freshness ペイロードを表示できない。
 - **dbt テストカバレッジの拡充** + PR CI に **sqlfluff** lint を追加。
 - **Cloud Monitoring ダッシュボード**：パイプライン健全性可視化（Job 実行時間、BQ slot 消費、GCS オブジェクトの古さなど）。
