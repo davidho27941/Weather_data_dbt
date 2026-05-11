@@ -1,0 +1,18 @@
+# Terraform working dir (provider binaries etc — refetched by `terraform init`).
+.terraform/
+
+# .terraform.lock.hcl IS committed — pins provider versions across all
+# workstations / CI runs, same role as package-lock.yml for dbt.
+
+# Local state files (we use the GCS backend, but in a recovery scenario
+# the migration could drop these).
+*.tfstate
+*.tfstate.*
+
+# Per-environment values + sensitive overrides.
+terraform.tfvars
+*.auto.tfvars
+
+# Plan artifacts.
+tfplan
+tfplan.*

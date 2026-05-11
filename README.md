@@ -68,7 +68,8 @@ for the most recent change set see [`docs/pr_desc.md`](docs/pr_desc.md).
 | [`infra/bq/`](infra/bq/) | Bronze layer: schema files, bulk load scripts, and `bronze-daily-load` Cloud Run Job (Dockerfile + deploy + scheduler scripts) |
 | [`weather_data_dbt/`](weather_data_dbt/) | dbt project (BigQuery profile, dev / stg / prod / ci targets) |
 | [`infra/dbt/`](infra/dbt/) | Dockerfile + scripts for the two Cloud Run Jobs (`dbt-weekly-build`, `dbt-hourly-freshness`) and their Cloud Scheduler triggers |
-| [`infra/monitoring/`](infra/monitoring/) | Cloud Monitoring email alert policy on Cloud Run Job execution failures |
+| [`infra/monitoring/`](infra/monitoring/) | Shell-script onboarding for the Cloud Monitoring email alert policy (now mirrored by Terraform — see below) |
+| [`terraform/`](terraform/) | **Source of truth (PR #5 onward).** Single Terraform root managing SAs, IAM, AR repo, BQ datasets, three Cloud Run Jobs, three Schedulers, and the Cloud Monitoring channel + alert policy. State in `gs://weather-pipeline-tfstate`. |
 | [`.github/workflows/`](.github/workflows/) | GitHub Actions CI (PR validation) + CD (image push, Cloud Run Job rollout) + dbt docs publishing |
 | [`docs/`](docs/) | `redesign_proposal.md` (design doc) and `pr_desc.md` (current PR description) |
 | `dags/`, root `Dockerfile` | **Legacy** v1 Airflow + Snowflake; no longer wired into anything. Slated for removal in a follow-up cleanup PR. |
@@ -84,6 +85,7 @@ for the most recent change set see [`docs/pr_desc.md`](docs/pr_desc.md).
 | Orchestration | Three Cloud Run Jobs + Cloud Scheduler triggers: `bronze-daily-load` (`0 2 * * *`), `dbt-weekly-build` (`30 2 * * 1`), `dbt-hourly-freshness` (`0 * * * *`) |
 | Alerting | Cloud Monitoring email alert policy on `run.googleapis.com/job/completed_execution_count{result=failed}` for the three jobs above |
 | CI/CD | GitHub Actions (auth via service-account JSON keys; WIF migration documented) |
+| IaC | Terraform `~> 6.0` google provider, single root in [`terraform/`](terraform/), state in GCS bucket `weather-pipeline-tfstate` |
 
 ## Environments
 
@@ -131,15 +133,21 @@ dbt docs are auto-published to GitHub Pages on every push to `main`:
   - PR #2 — bronze layer in BigQuery (`weather_raw.*`) via bulk load + daily MERGE.
   - PR #3 — dbt rewrite for BigQuery, three Cloud Run Jobs (bronze daily, dbt weekly, dbt freshness hourly) wired with Cloud Scheduler triggers, GHA CI/CD.
   - PR #4 — Cloud Monitoring email alert on Cloud Run Job execution failures.
+  - PR #5 — Terraform IaC for everything in PR #3 + PR #4 (single root in [`terraform/`](terraform/), state in `gs://weather-pipeline-tfstate`). Source of truth flips from shell scripts to `terraform apply`.
 
 ## Future work
 
-- **Terraform** for SA / IAM / Artifact Registry / Cloud Run Jobs / Schedulers / monitoring policy (everything currently created via shell scripts).
+- **Workload Identity Federation** for GitHub Actions, replacing the
+  two SA-key secrets (eliminates key rotation toil).
+- **GCS lifecycle policy** on the crawler bucket — crawler JSON
+  accumulates indefinitely; tier to Nearline → Coldline → delete.
 - **Webhook alert channel** (Discord / Slack / Pub-Sub) + **freshness wrapper** that posts structured per-source detail. Email channel can't carry granular freshness payloads usefully.
+- **dbt test coverage expansion** + **sqlfluff** lint in PR CI.
 - **Cloud Monitoring dashboards** for pipeline health (Job duration trends, BQ slot consumption, GCS object age).
+- **Renovate / Dependabot** for dbt-core / dbt-bigquery / SDK / base-image bumps.
 - **BQ data-quality monitoring** (e.g. [`elementary-data`](https://github.com/elementary-data/elementary)
   layered on dbt artifacts).
-- **Workload Identity Federation** for GitHub Actions, replacing the
-  two SA-key secrets.
+- **prod environment** — split `terraform/envs/{staging,prod}/`, stand up `side-project-prod`.
+- **Terraform apply via GHA** with PR review gates (currently `apply` is a workstation operation).
 - **Removing legacy Airflow / Snowflake artifacts** (`dags/`, root
   `Dockerfile`, old image references).
