@@ -68,3 +68,18 @@ resource "google_bigquery_dataset_iam_member" "gha_ci_raw_viewer" {
   role       = "roles/bigquery.dataViewer"
   member     = "serviceAccount:gha-ci@${var.project}.iam.gserviceaccount.com"
 }
+
+# gha-ci: read access on the stg-managed datasets.
+#
+# Used by the dbt-docs publishing workflow (.github/workflows/build_dbt_docs.yml)
+# which now runs `dbt docs generate --target stg` so the catalog reflects
+# prod row counts / column metadata rather than the CI 7-day subsample.
+# Read-only — gha-ci has no editor or owner role on these datasets.
+resource "google_bigquery_dataset_iam_member" "gha_ci_managed_viewer" {
+  for_each   = toset(local.managed_datasets)
+  dataset_id = each.key
+  role       = "roles/bigquery.dataViewer"
+  member     = "serviceAccount:gha-ci@${var.project}.iam.gserviceaccount.com"
+
+  depends_on = [google_bigquery_dataset.managed]
+}

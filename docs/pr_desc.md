@@ -1,106 +1,108 @@
-# Design decision notes (PR #8)
+# dbt docs: publish catalog stats against `stg` target (PR #9)
 
 ## Summary
 
-Adds [`docs/decisions/`](../docs/decisions/) with three short notes
-about non-obvious design choices in this repo. Format borrows from
-ADRs (Status / Date / Context / Decision / Alternatives / Consequences)
-but intentionally without the ADR framing — these are working notes
-written when they earn their keep, not a process to perform.
+Until now, the dbt-docs site on GitHub Pages showed row counts and
+table sizes from `weather_ci_*` — the datasets PR-CI rebuilds with a
+7-day bronze subsample. That made the published catalog misleading
+(e.g. `fct_measurements_10min` showing ~319k rows when the prod table
+in `weather_marts` has the full historical millions).
 
-The three notes:
+This PR switches `build_dbt_docs.yml` to compile against `--target stg`
+so the catalog reflects the prod marts. To make that work, `gha-ci`
+needs read access on the three stg-managed datasets — provisioned in
+Terraform.
 
-| # | Title | Status |
-|---|---|---|
-| [001](../docs/decisions/001-string-typed-bronze-sentinels.md) | STRING-typed bronze observations preserve CWA sentinels | Accepted |
-| [002](../docs/decisions/002-dual-column-raw-cleaned-staging.md) | Dual-column raw + cleaned staging pattern | Accepted |
-| [003](../docs/decisions/003-enforce-dbt-contracts-on-marts.md) | Enforce dbt model contracts on the marts layer | **Proposed** |
+## Root cause recap
 
-## Why this scope (and not more)
+| Component | Target | Writes to | Volume |
+|---|---|---|---|
+| `dbt_ci.yml` (PR validation) | `ci` + `--vars '{ci_sample_days: 7}'` | `weather_ci_*` | ~319k rows (7-day sample) |
+| `build_dbt_docs.yml` (was) | `ci` | (read-only) | inherits the 319k sample |
+| `dbt-weekly-build` (prod) | `stg` | `weather_{staging,intermediate,marts}` | full history (Ms of rows) |
 
-Earlier drafts of this PR carried seven entries covering every v2
-choice (GCP-over-Snowflake, Cloud Run Job vs orchestrator, single TF
-root, weekly dbt cadence, etc.). Cut deliberately to three. Reason:
-retrospective decision-notes for choices already documented in PR
-descriptions are decoration. Solo project + same week's decisions is
-the worst possible signal-to-noise for "ADR culture as portfolio
-prop". Kept the two retrospectives that genuinely add value:
-
-- **001** — bronze sentinels constrain the whole staging layer; the
-  alternatives (NULL-at-ingest, sentinel-flag columns, JSON) aren't
-  obvious from reading the code.
-- **002** — the dual-column raw + cleaned pattern is the single most
-  distinctive piece of staging in this repo, and "why not just
-  cleaned columns" is the most common reaction to it.
-
-The third (**003**) is forward-looking: it's the design record for
-the dbt-contract-enforcement change that lands in the next PR. Writing
-it now creates a decide-before-implement gate so the design review
-and the column-by-column type review happen on different PRs.
-
-Other v2 choices (GCP, Cloud Run, weekly cadence, etc.) are standard
-SaaS choices already covered adequately in [`README.md` § Migration
-history](../README.md#migration-history) and the original
-[`docs/redesign_proposal.md`](../docs/redesign_proposal.md). A note
-that just restates "we picked the obvious tool" doesn't earn the file.
-
-## What's in this PR
-
-### `docs/decisions/README.md`
-
-Lightweight index + template + a "Why only three" section explaining
-what's *not* covered and where the broader design narrative lives.
-Format spec is half a page; no Nygard reference, no ceremony.
-
-### Three notes
-
-Files are numbered `NNN-kebab-title.md`. Headings are the decision
-title in present tense (no "Note:" / "ADR:" prefix). Cross-references
-between notes use the number (e.g. "decision 001").
-
-001 and 002 are `Status: Accepted` with the date pulled from the
-original merge timestamps. 003 is `Status: Proposed` — it will flip
-to `Accepted` in the same commit that lands the implementation in the
-next PR.
-
-### README updates
-
-- Repository layout: `docs/` row now mentions `decisions/`.
-- Migration history: PR #8 bullet added (both EN and JP).
-- Future work: dbt-contract bullet now points at decision 003.
+`dbt docs generate` doesn't build anything; it queries
+INFORMATION_SCHEMA on the target's resolved datasets. So whichever
+target the workflow uses determines which physical tables the catalog
+introspects. Until this PR, that target was the wrong one.
 
 ## Changes
 
-| File | Change |
-|---|---|
-| [`docs/decisions/README.md`](../docs/decisions/README.md) | New: index + template + scope explanation |
-| [`docs/decisions/001-string-typed-bronze-sentinels.md`](../docs/decisions/001-string-typed-bronze-sentinels.md) | New: retrospective, Accepted |
-| [`docs/decisions/002-dual-column-raw-cleaned-staging.md`](../docs/decisions/002-dual-column-raw-cleaned-staging.md) | New: retrospective, Accepted |
-| [`docs/decisions/003-enforce-dbt-contracts-on-marts.md`](../docs/decisions/003-enforce-dbt-contracts-on-marts.md) | New: forward-looking, Proposed |
-| [`README.md`](../README.md) + [`multilingual_readme/readme_jp.md`](../multilingual_readme/readme_jp.md) | Repo layout + Migration history + Future work |
+### `terraform/bigquery.tf`
+
+Adds three `google_bigquery_dataset_iam_member` resources granting
+`gha-ci` the `bigquery.dataViewer` role on each of
+`weather_{staging,intermediate,marts}`. Read-only — `gha-ci` does not
+get editor or owner; it cannot mutate prod data.
+
+```hcl
+resource "google_bigquery_dataset_iam_member" "gha_ci_managed_viewer" {
+  for_each   = toset(local.managed_datasets)
+  dataset_id = each.key
+  role       = "roles/bigquery.dataViewer"
+  member     = "serviceAccount:gha-ci@${var.project}.iam.gserviceaccount.com"
+  depends_on = [google_bigquery_dataset.managed]
+}
+```
+
+### `.github/workflows/build_dbt_docs.yml`
+
+Single substantive change: `--target ci` → `--target stg`. Header
+comment and the "Required IAM" note also updated so the next reader
+doesn't have to re-derive the design.
+
+### `dbt deps` / build steps
+
+No change — `dbt docs generate` only needs the manifest + a connection
+that can read INFORMATION_SCHEMA on the target datasets. No models are
+materialised by this workflow.
+
+## Why not switch the workflow's auth to gha-cd (which already has
+broader access)?
+
+Considered, rejected. Two reasons:
+
+- `gha-cd` has `roles/run.developer` and writer access to Artifact
+  Registry. A docs-publishing job doesn't need either, and giving a
+  workflow more than it needs is a small but real security regression.
+- The minimal grant (`bigquery.dataViewer` on three specific datasets)
+  is tighter than "use the CD SA" and creates no precedent for "docs
+  jobs should use CD credentials".
 
 ## Test plan
 
-Prose; no runtime. Verification is editorial:
-
-- [x] Each note has Status, Date, Context, Decision, Alternatives
-      considered, Consequences.
-- [x] Alternatives sections enumerate at least two rejected options
-      with reasons, not "we picked the best one" hand-waving.
-- [x] All internal links resolve.
-- [x] Index in `docs/decisions/README.md` matches the filenames.
-- [x] Top-level README references the new directory.
-- [ ] Reviewer reads each note and disagrees if any historical claim
-      is wrong. **This is the actual review.**
+- [x] `terraform validate` — passes.
+- [x] `terraform plan` — `3 to add, 1 to change, 0 to destroy`.
+      The 3 adds are the new `gha_ci_managed_viewer` IAM bindings.
+      The 1 in-place change is the BQ dashboard panel converging on
+      the `scanned_bytes_billed` filter that was specified in PR #7
+      commit `724c6c4` but never `terraform apply`d to live state
+      after PR #7 merged — this PR's apply incidentally fixes that
+      drift.
+- [ ] `terraform apply` on this branch's plan after merge.
+- [ ] Watch `build_dbt_docs.yml` run on the merge commit, confirm:
+      - Auth step succeeds with the same `GCP_SA_KEY_CI` secret.
+      - `dbt docs generate --target stg` step succeeds (no
+        permission-denied errors on `weather_*` datasets).
+      - Published GitHub Pages site shows `fct_measurements_10min`
+        row count consistent with the live BQ table (compare against
+        `bq query 'SELECT COUNT(*) FROM weather_marts.fct_measurements_10min'`).
 
 ## Out of scope
 
-- **dbt contract implementation.** Lands in the follow-up PR. See
-  decision 003 § Implementation plan.
-- **Notes for choices already covered in PR descriptions** (GCP,
-  Cloud Run Job, weekly cadence, single TF root). Deliberately not
-  added — they'd be decoration.
+- **Removing `weather_ci_*` from the catalog entirely.** The CI
+  datasets still exist and are still useful for ad-hoc inspection
+  during PR review. They just shouldn't be what the published docs
+  reflect.
+- **Auto-refresh on weekly build.** Docs only regenerate on push to
+  `main` touching `weather_data_dbt/**`. After this PR, row counts
+  shown still lag by one weekly dbt-build run. That's acceptable —
+  schema and lineage are what readers come for; row counts are
+  illustrative. A workflow trigger on dbt-weekly-build completion is
+  Future work (not currently warranted).
 
 ## References
 
-- Branch: `feat/design-decisions` → `main`
+- Reporting issue that triggered this: row-count mismatch between
+  dbt docs and BQ console.
+- Branch: `feat/dbt-docs-stg-target` → `main`
