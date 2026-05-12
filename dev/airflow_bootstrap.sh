@@ -25,7 +25,14 @@ PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
 CONSTRAINT_URL="https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
 
 # --- venv --------------------------------------------------------------------
-if [[ ! -d ".venv-airflow" ]]; then
+# Check for the python binary specifically, not just the directory — CI cache
+# restores can land a partial shell (dir exists, binary missing) and a bare
+# -d check would falsely report "reuse" and then `uv pip install` fails.
+if [[ ! -x ".venv-airflow/bin/python" ]]; then
+  if [[ -e ".venv-airflow" ]]; then
+    echo "==> Found partial .venv-airflow without a python binary; removing"
+    rm -rf .venv-airflow
+  fi
   echo "==> Creating .venv-airflow (python ${PYTHON_VERSION})"
   uv venv .venv-airflow --python "${PYTHON_VERSION}"
 else
