@@ -45,8 +45,10 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
-        with:
-          enable-cache: true
+        # No enable-cache here: setup-uv's built-in cache keys off uv.lock,
+        # which this repo doesn't have (uv venv is used as an installer,
+        # not a dependency-locking tool). We cache the resolved
+        # .venv-airflow directory ourselves via actions/cache below.
 
       # The .venv-airflow directory holds ~500 MB of Airflow + Cosmos +
       # provider wheels; rebuilding it cold takes 3-5 min. Key on the
