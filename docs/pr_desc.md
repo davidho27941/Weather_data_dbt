@@ -27,13 +27,36 @@ one folder: same problem, two stacks, both expressed.
 
 Three deliberate decisions worth flagging:
 
-**1. `cosmos` for dbt, not raw `BashOperator`.**
+**1. `cosmos` for dbt — and specifically `ExecutionMode.WATCHER`.**
 Matches the v1 `cwa_transformation_incremental_v_1_0_0` DAG that
 already uses `DbtTaskGroup`. `cosmos` parses dbt's manifest at task
 runtime and produces one Airflow task per dbt node, which gives the
 Airflow UI real visibility into dbt graph progress — strictly more
 useful than `BashOperator("dbt build")` lumping everything into one
 opaque step.
+
+On top of that, the dbt transformation DAG runs in **`ExecutionMode.WATCHER`**
+(cosmos 1.14, battle-tested per the Astronomer release notes):
+a single dbt process per DAG run, with one deferrable sensor per
+model polling a producer's XCom stream. The per-task `dbt` startup
+cost (~5-10s) is paid once instead of N times; reported runtime gain
+on real workloads is up to ~80%. `InvocationMode.DBT_RUNNER` is set
+in tandem so dbt is invoked via its Python API (necessary for the
+watcher to receive structured events).
+
+Caveats baked into the DAG comments:
+  - Cosmos ≥ 1.14 required (drops Airflow < 2.9).
+  - `WATCHER` only handles `run` / `seed` / `snapshot`. Tests still
+    run via standard cosmos test operators — at ~80 tests on BQ this
+    is fine; tests are cheap warehouse-side anyway.
+  - `dbt build` itself is not a watcher-supported command, but
+    cosmos's `DbtTaskGroup` decomposes the DAG into model + test
+    pairs by default, so we don't invoke `dbt build` directly. Models
+    get watcher acceleration; tests get the standard path.
+  - Thread count bumped to 8 in the profile mapping — watcher fans
+    models out concurrently inside the single dbt process up to this
+    limit, so a higher `threads` pays off more under WATCHER than
+    under per-model LOCAL.
 
 **2. `BigQueryInsertJobOperator` for the bronze MERGE, not a custom
 operator or BashOperator.**
@@ -60,7 +83,9 @@ would work without changes.
   `google_cloud_default` connection configured against ADC or a SA
   JSON key.
 - For `cosmos`, a Python venv at `/opt/airflow/dbt_venv/` has
-  `dbt-bigquery` available.
+  `dbt-bigquery` available, and the cosmos package itself is **≥ 1.14**
+  (watcher mode prerequisite). Airflow itself must be **≥ 2.9** for the
+  same reason.
 - Two Airflow Variables: `cwa_auth_token` (for the CWA API) and
   optionally `gcs_weather_bucket` (defaults to
   `side-project-weather-data`).
