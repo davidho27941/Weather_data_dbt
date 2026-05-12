@@ -100,6 +100,16 @@ rm -rf .venv-airflow .airflow-home
 
 Both directories are `.gitignore`'d.
 
+## Same scripts run in CI
+
+[`/.github/workflows/dag_check.yml`](../.github/workflows/dag_check.yml)
+runs `./dev/airflow_bootstrap.sh` (with `.venv-airflow/` cached on the
+runner) and then `./dev/airflow_check.sh` on every PR touching
+`dags/`, `weather_data_dbt/`, or `dev/`. So the local feedback loop
+and the merge gate exercise the exact same code path — a DAG that
+parses locally also passes CI, and a CI failure can be reproduced
+locally without "works on my machine" debugging.
+
 ## Pinned versions
 
 Cosmos 1.14+ for `ExecutionMode.WATCHER` is the load-bearing pin; that
