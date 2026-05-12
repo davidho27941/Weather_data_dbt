@@ -1,0 +1,80 @@
+name: dag check
+
+# Validates the v_2_0_0 Airflow DAGs parse cleanly under the same uv-managed
+# Airflow + Cosmos + dbt-bigquery stack the developer runs locally
+# (see dev/README.md). Reuses dev/airflow_bootstrap.sh + dev/airflow_check.sh
+# so CI and the local feedback loop can't drift.
+#
+# Triggered on any change that could plausibly break a DAG: the DAG files
+# themselves, the dbt project they reference, the dev tooling, or this
+# workflow.
+
+on:
+  pull_request:
+    paths:
+      - 'dags/**'
+      - 'weather_data_dbt/**'
+      - 'dev/**'
+      - '.github/workflows/dag_check.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'dags/**'
+      - 'weather_data_dbt/**'
+      - 'dev/**'
+      - '.github/workflows/dag_check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One run per (workflow × ref). PR pushes cancel earlier runs on the
+  # same branch; main pushes run to completion.
+  group: dag-check-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        # No enable-cache here: setup-uv's built-in cache keys off uv.lock,
+        # which this repo doesn't have (uv venv is used as an installer,
+        # not a dependency-locking tool). We cache the resolved
+        # .venv-airflow directory ourselves via actions/cache below.
+
+      # The .venv-airflow directory holds ~500 MB of Airflow + Cosmos +
+      # provider wheels; rebuilding it cold takes 3-5 min. Key on the
+      # bootstrap script's hash so any version bump invalidates the
+      # cache automatically.
+      - name: Restore .venv-airflow cache
+        id: venv-cache
+        uses: actions/cache@v4
+        with:
+          path: .venv-airflow
+          key: airflow-venv-${{ runner.os }}-py3.11-${{ hashFiles('dev/airflow_bootstrap.sh') }}
+
+      # Run bootstrap on cache miss OR when a cache hit lands a venv that
+      # isn't actually usable (partial save from a prior failed job,
+      # actions/cache wonkiness, etc). The script is idempotent — when the
+      # venv is already correct it just no-ops on the install steps.
+      - name: Bootstrap Airflow venv if missing or broken
+        run: |
+          if [[ ! -x .venv-airflow/bin/python ]] \
+              || [[ ! -x .venv-airflow/bin/airflow ]] \
+              || [[ ! -x .venv-airflow/bin/dbt ]]; then
+            echo "::notice::venv missing or broken — running bootstrap"
+            ./dev/airflow_bootstrap.sh
+          else
+            echo "venv looks usable (cache hit valid); skipping bootstrap"
+          fi
+
+      - name: Check DAGs parse cleanly
+        run: ./dev/airflow_check.sh

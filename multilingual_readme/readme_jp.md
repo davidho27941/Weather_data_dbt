@@ -83,7 +83,9 @@ ML パイプラインがそれぞれ必要なカラムを選択できます。
 | [`terraform/`](../terraform/) | **真実の単一情報源（PR #5 以降）。** SA、IAM、AR repo、BQ datasets、クローラー GCS bucket（lifecycle 含む）、3 つの Cloud Run Job、3 つの Scheduler、Cloud Monitoring channel + 複数アラートポリシー + パイプラインヘルスダッシュボード、dbt テスト失敗用の log-based metric を一括で管理する単一の Terraform root。State は `gs://weather-pipeline-tfstate`。 |
 | [`.github/workflows/`](../.github/workflows/) | GitHub Actions：CI（PR 検証）+ CD（イメージ push、Cloud Run Job ロールアウト）+ dbt docs 公開 |
 | [`docs/`](../docs/) | `redesign_proposal.md`（設計ドキュメント）、[`decisions/`](../docs/decisions/)（自明でない設計判断のメモ）、`slo.md`（SLO と対応方針）、`pr_desc.md`（最新 PR 説明） |
-| `dags/`、ルートの `Dockerfile` | **レガシー** v1 Airflow + Snowflake 用。現在は配線されておらず、後続のクリーンアップ PR で削除予定。 |
+| [`dags/`](../dags/) | Airflow DAG。`*_v_1_*` は Snowflake 時代の歴史的 v1；`*_v_2_0_0` は v2 アーキテクチャ（crawler / bronze daily MERGE / weekly dbt build / hourly source freshness）の Airflow ネイティブ移植版で、v2 設計が orchestrator ベースのスタックにも移植できることを示すために残してある（本番には配線されていない）。 |
+| [`dev/`](../dev/) | uv 管理の Airflow ローカル sandbox。`*_v_2_0_0` DAG の編集を手元で素早く検証するため。`.github/workflows/dag_check.yml` が同じ bootstrap + check スクリプトを CI でも実行するので、ローカルと CI は同じパスを通る。 |
+| ルートの `Dockerfile` | **レガシー** v1 Airflow image。後続のクリーンアップ PR で削除予定。 |
 
 ## 技術スタック
 
@@ -140,7 +142,8 @@ dbt ドキュメントは `main` への push のたびに GitHub Pages へ自動
 ## マイグレーション履歴
 
 - **v1（廃止）**：Airflow 2.9 + AWS S3 + Snowflake。ソースは
-  [`dags/`](../dags/) と Airflow ベースのルート `Dockerfile` 配下。
+  [`dags/`](../dags/) の `*_v_1_*` ファイル群と Airflow ベースのルート
+  `Dockerfile` 配下。
   [`images/jp/`](../images/jp/) のダイアグラムはこの構成を反映しています。
 - **v2（現行）**：GCP ネイティブ。
   - PR #2 — BigQuery に bronze 層（`weather_raw.*`）を導入。一括ロード + 日次 MERGE。
@@ -150,6 +153,8 @@ dbt ドキュメントは `main` への push のたびに GitHub Pages へ自動
   - PR #6 — クローラー GCS bucket を Terraform に import し、多段ライフサイクル（Standard → Nearline 30 日 → Coldline 90 日 → Archive 365 日、削除なし）を追加。Bucket には `prevent_destroy = true` を設定し、削除は 2 コミット必須の操作にする。
   - PR #7 — データ品質 + Observability の強化。dbt テスト拡充（relationships、全数値測定カラムの accepted_range、sentinel translation invariant、z-score による行数アノマリー）、dbt severity=error 失敗用の log-based metric + アラートポリシー、単一の `Weather pipeline health` Cloud Monitoring ダッシュボード、SLO 明示用の [`docs/slo.md`](../docs/slo.md)。
   - PR #8 — [`docs/decisions/`](../docs/decisions/) に自明でない 3 つの設計判断のメモを追加：STRING-typed bronze sentinels（001）、dual-column raw + cleaned staging（002）、marts レイヤーの dbt contract 強制提案（003、`Status: Proposed`）。Contract の実装は別 PR に切り出し、設計レビューとカラム単位の型レビューを独立で行えるようにする。
+  - PR #9 — `build_dbt_docs.yml` workflow を `--target stg` に切り替え、GitHub Pages 上の dbt docs カタログが prod の行数を反映するようにする（以前は CI の 7 日 subsample を継承していた）。Terraform で `gha-ci` に `weather_{staging,intermediate,marts}` 上の `dataViewer` IAM binding を追加。
+  - PR #10 — v2 アーキテクチャの Airflow ネイティブ移植版を [`dags/*_v_2_0_0`](../dags/) に追加。4 つの DAG が v2 cadence を再現（10 分毎 crawler / 日次 MERGE / 週次 dbt build / 時次 source freshness）。dbt 部分は `cosmos`、BigQuery + GCS は providers を使用。v2 設計が orchestrator ベースのスタックにも移植可能であることを示すための実装；本番への配線は行わない（本番は Cloud Run Job のまま）。
 
 ## 今後の作業
 
@@ -167,5 +172,5 @@ dbt ドキュメントは `main` への push のたびに GitHub Pages へ自動
   を被せるなど） — 現状の singular anomaly test を将来的に置き換える想定。
 - **prod 環境** — `terraform/envs/{staging,prod}/` に分割、`side-project-prod` を立ち上げ。
 - **Terraform apply の GHA 化** + PR review ゲート（現状は `apply` がワークステーション操作）。
-- **レガシーな Airflow / Snowflake 関連成果物の削除**（`dags/`、ルート
-  `Dockerfile`、古いイメージ参照など）。
+- **レガシーな Snowflake 関連成果物の削除**（ルートの v1 `Dockerfile`、
+  古いイメージ参照など）。`dags/` は v2 移植版を含むため残置。

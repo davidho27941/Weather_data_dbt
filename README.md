@@ -79,7 +79,9 @@ for the most recent change set see [`docs/pr_desc.md`](docs/pr_desc.md).
 | [`terraform/`](terraform/) | **Source of truth (PR #5 onward).** Single Terraform root managing SAs, IAM, AR repo, BQ datasets, crawler GCS bucket (with lifecycle), three Cloud Run Jobs, three Schedulers, Cloud Monitoring channel + alert policies + pipeline-health dashboard, log-based metric for dbt test failures. State in `gs://weather-pipeline-tfstate`. |
 | [`.github/workflows/`](.github/workflows/) | GitHub Actions CI (PR validation) + CD (image push, Cloud Run Job rollout) + dbt docs publishing |
 | [`docs/`](docs/) | `redesign_proposal.md` (design doc), [`decisions/`](docs/decisions/) (notes on non-obvious design choices), `slo.md` (SLOs + response stance), `pr_desc.md` (current PR description) |
-| `dags/`, root `Dockerfile` | **Legacy** v1 Airflow + Snowflake; no longer wired into anything. Slated for removal in a follow-up cleanup PR. |
+| [`dags/`](dags/) | Airflow DAGs. `*_v_1_*` are the historical Snowflake-era v1; `*_v_2_0_0` are an Airflow-native port of the v2 architecture (crawler / bronze daily MERGE / weekly dbt build / hourly source freshness) — kept as a demonstration that the v2 design is portable to an orchestrator-based stack, not because they're wired into production. |
+| [`dev/`](dev/) | uv-managed local Airflow sandbox for validating `*_v_2_0_0` DAG edits. The same bootstrap + check scripts run on every PR via [`.github/workflows/dag_check.yml`](.github/workflows/dag_check.yml) so local and CI exercise the same path. |
+| Root `Dockerfile` | **Legacy** v1 Airflow image. Slated for removal in a follow-up cleanup PR. |
 
 ## Stack
 
@@ -135,8 +137,8 @@ dbt docs are auto-published to GitHub Pages on every push to `main`:
 ## Migration history
 
 - **v1 (deprecated)**: Airflow 2.9 + AWS S3 + Snowflake. Source under
-  [`dags/`](dags/) and the Airflow root `Dockerfile`. Diagrams under
-  [`images/en/`](images/en/) reflect this stack.
+  [`dags/`](dags/) (`*_v_1_*` files) and the Airflow root `Dockerfile`.
+  Diagrams under [`images/en/`](images/en/) reflect this stack.
 - **v2 (current)**: GCP-native.
   - PR #2 — bronze layer in BigQuery (`weather_raw.*`) via bulk load + daily MERGE.
   - PR #3 — dbt rewrite for BigQuery, three Cloud Run Jobs (bronze daily, dbt weekly, dbt freshness hourly) wired with Cloud Scheduler triggers, GHA CI/CD.
@@ -145,6 +147,8 @@ dbt docs are auto-published to GitHub Pages on every push to `main`:
   - PR #6 — Crawler GCS bucket imported into Terraform with a tiered lifecycle (Standard → Nearline 30d → Coldline 90d → Archive 365d, no delete). `prevent_destroy = true` on the bucket to keep destroy a two-commit operation.
   - PR #7 — Data quality + observability hardening. Expanded dbt tests (relationships, accepted_range on all numeric measurement columns, sentinel-translation invariant, row-count anomaly via z-score), new log-based metric + alert policy for dbt severity=error failures, single `Weather pipeline health` Cloud Monitoring dashboard, [`docs/slo.md`](docs/slo.md) for explicit SLO targets.
   - PR #8 — Design decision notes under [`docs/decisions/`](docs/decisions/) for three non-obvious choices: STRING-typed bronze sentinels (001), dual-column raw + cleaned staging (002), and a proposal for enforcing dbt contracts on the marts layer (003, `Status: Proposed`). The contract enforcement lands in a separate follow-up PR so the design and the column-by-column implementation get reviewed independently.
+  - PR #9 — Switched the `build_dbt_docs.yml` workflow to compile against `--target stg` so the published GitHub Pages catalog reflects prod row counts (was inheriting CI's 7-day subsample). New `gha-ci` `dataViewer` IAM bindings on `weather_{staging,intermediate,marts}` provisioned in Terraform.
+  - PR #10 — Airflow-native port of the v2 architecture under [`dags/*_v_2_0_0`](dags/). Four DAGs mirror the v2 cadence (10-min crawler / daily MERGE / weekly dbt build / hourly source freshness) using `cosmos` for dbt and GCP providers for BigQuery + GCS. Demonstrates the v2 design is portable to an orchestrator-based stack; not wired into production (production stays on Cloud Run Jobs).
 
 ## Future work
 
@@ -161,5 +165,6 @@ dbt docs are auto-published to GitHub Pages on every push to `main`:
   layered on dbt artifacts) — would supersede the per-singular-test anomaly checks.
 - **prod environment** — split `terraform/envs/{staging,prod}/`, stand up `side-project-prod`.
 - **Terraform apply via GHA** with PR review gates (currently `apply` is a workstation operation).
-- **Removing legacy Airflow / Snowflake artifacts** (`dags/`, root
-  `Dockerfile`, old image references).
+- **Removing legacy Snowflake artifacts** (root v1 `Dockerfile`, old
+  image references). `dags/` stays because it now also holds the v2
+  Airflow port.

@@ -1,2 +1,9 @@
 logs/
 weather-crawler/
+
+# Local Airflow dev environment (see dev/README.md).
+.venv-airflow/
+.airflow-home/
+
+# Python bytecode generated when Airflow imports DAG files.
+__pycache__/
