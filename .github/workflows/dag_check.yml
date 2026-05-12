@@ -61,9 +61,20 @@ jobs:
           path: .venv-airflow
           key: airflow-venv-${{ runner.os }}-py3.11-${{ hashFiles('dev/airflow_bootstrap.sh') }}
 
-      - name: Bootstrap Airflow venv (on cache miss)
-        if: steps.venv-cache.outputs.cache-hit != 'true'
-        run: ./dev/airflow_bootstrap.sh
+      # Run bootstrap on cache miss OR when a cache hit lands a venv that
+      # isn't actually usable (partial save from a prior failed job,
+      # actions/cache wonkiness, etc). The script is idempotent — when the
+      # venv is already correct it just no-ops on the install steps.
+      - name: Bootstrap Airflow venv if missing or broken
+        run: |
+          if [[ ! -x .venv-airflow/bin/python ]] \
+              || [[ ! -x .venv-airflow/bin/airflow ]] \
+              || [[ ! -x .venv-airflow/bin/dbt ]]; then
+            echo "::notice::venv missing or broken — running bootstrap"
+            ./dev/airflow_bootstrap.sh
+          else
+            echo "venv looks usable (cache hit valid); skipping bootstrap"
+          fi
 
       - name: Check DAGs parse cleanly
         run: ./dev/airflow_check.sh
