@@ -18,9 +18,22 @@ than cosmos because:
 Schedule matches the v2 Cloud Scheduler trigger (hourly on the hour).
 """
 
+import os
+
 import pendulum
 from airflow import DAG
 from airflow.operators.bash import BashOperator
+
+
+# Production defaults (override via env vars for local validation; see dev/).
+DBT_PROJECT_DIR = os.getenv(
+    "DBT_PROJECT_DIR_LOCAL",
+    "/opt/airflow/dags/repo/weather_data_dbt",
+)
+DBT_EXECUTABLE_PATH = os.getenv(
+    "DBT_EXECUTABLE_PATH",
+    "/opt/airflow/dbt_venv/bin/dbt",
+)
 
 
 with DAG(
@@ -39,8 +52,8 @@ with DAG(
     source_freshness = BashOperator(
         task_id="dbt_source_freshness",
         bash_command=(
-            "cd /opt/airflow/dags/repo/weather_data_dbt && "
-            "/opt/airflow/dbt_venv/bin/dbt source freshness "
+            f"cd {DBT_PROJECT_DIR} && "
+            f"{DBT_EXECUTABLE_PATH} source freshness "
             "--target stg "
             "--profiles-dir profiles "
             "; "

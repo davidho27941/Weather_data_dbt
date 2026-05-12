@@ -35,6 +35,7 @@ Caveats baked in:
     on the model pass and standard execution on tests.
 """
 
+import os
 from pathlib import Path
 
 import pendulum
@@ -51,9 +52,19 @@ from cosmos.constants import ExecutionMode, InvocationMode, LoadMode
 from cosmos.profiles import GoogleCloudOauthProfileMapping
 
 
-# Path inside the Airflow worker; assume the repo is mounted at /opt/airflow/dags/repo
-# (same convention as v1 DAG). Adjust if the deployment differs.
-DBT_PROJECT_PATH = Path("/opt/airflow/dags/repo/weather_data_dbt")
+# Production default assumes the repo is mounted at /opt/airflow/dags/repo
+# (same convention as v1 DAG). Local-validation flows (see dev/) override
+# both paths via env vars so the DAG resolves against the developer's venv.
+DBT_PROJECT_PATH = Path(
+    os.getenv(
+        "DBT_PROJECT_PATH",
+        "/opt/airflow/dags/repo/weather_data_dbt",
+    )
+)
+DBT_EXECUTABLE_PATH = os.getenv(
+    "DBT_EXECUTABLE_PATH",
+    "/opt/airflow/dbt_venv/bin/dbt",
+)
 
 
 profile_config = ProfileConfig(
@@ -101,7 +112,7 @@ with DAG(
         execution_config=ExecutionConfig(
             execution_mode=ExecutionMode.WATCHER,
             invocation_mode=InvocationMode.DBT_RUNNER,
-            dbt_executable_path="/opt/airflow/dbt_venv/bin/dbt",
+            dbt_executable_path=DBT_EXECUTABLE_PATH,
         ),
         operator_args={
             "install_deps": True,

@@ -1,0 +1,8 @@
+# Skip v1 (Snowflake + S3) DAGs during local Airflow loading. They depend
+# on boto3 / snowflake-connector that the v2 dev venv doesn't install
+# (dev/airflow_bootstrap.sh). The v1 files are kept in the repo as a
+# historical record, not as actively-loaded DAGs.
+cwa_weather_stream_v_1_2_0\.py
+cwa_weather_station_stream\.py
+cwa_transformation_incremental_v_1_0_0\.py
+cwa_transformation_refresh_v_1_0_0\.py
