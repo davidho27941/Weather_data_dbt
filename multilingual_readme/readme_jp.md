@@ -84,6 +84,7 @@ ML パイプラインがそれぞれ必要なカラムを選択できます。
 | [`.github/workflows/`](../.github/workflows/) | GitHub Actions：CI（PR 検証）+ CD（イメージ push、Cloud Run Job ロールアウト）+ dbt docs 公開 |
 | [`docs/`](../docs/) | `redesign_proposal.md`（設計ドキュメント）、[`decisions/`](../docs/decisions/)（自明でない設計判断のメモ）、`slo.md`（SLO と対応方針）、`pr_desc.md`（最新 PR 説明） |
 | [`dags/`](../dags/) | Airflow DAG。`*_v_1_*` は Snowflake 時代の歴史的 v1；`*_v_2_0_0` は v2 アーキテクチャ（crawler / bronze daily MERGE / weekly dbt build / hourly source freshness）の Airflow ネイティブ移植版で、v2 設計が orchestrator ベースのスタックにも移植できることを示すために残してある（本番には配線されていない）。 |
+| [`dev/`](../dev/) | uv 管理の Airflow ローカル sandbox。`*_v_2_0_0` DAG の編集を手元で素早く検証するため。`.github/workflows/dag_check.yml` が同じ bootstrap + check スクリプトを CI でも実行するので、ローカルと CI は同じパスを通る。 |
 | ルートの `Dockerfile` | **レガシー** v1 Airflow image。後続のクリーンアップ PR で削除予定。 |
 
 ## 技術スタック

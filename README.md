@@ -80,6 +80,7 @@ for the most recent change set see [`docs/pr_desc.md`](docs/pr_desc.md).
 | [`.github/workflows/`](.github/workflows/) | GitHub Actions CI (PR validation) + CD (image push, Cloud Run Job rollout) + dbt docs publishing |
 | [`docs/`](docs/) | `redesign_proposal.md` (design doc), [`decisions/`](docs/decisions/) (notes on non-obvious design choices), `slo.md` (SLOs + response stance), `pr_desc.md` (current PR description) |
 | [`dags/`](dags/) | Airflow DAGs. `*_v_1_*` are the historical Snowflake-era v1; `*_v_2_0_0` are an Airflow-native port of the v2 architecture (crawler / bronze daily MERGE / weekly dbt build / hourly source freshness) — kept as a demonstration that the v2 design is portable to an orchestrator-based stack, not because they're wired into production. |
+| [`dev/`](dev/) | uv-managed local Airflow sandbox for validating `*_v_2_0_0` DAG edits. The same bootstrap + check scripts run on every PR via [`.github/workflows/dag_check.yml`](.github/workflows/dag_check.yml) so local and CI exercise the same path. |
 | Root `Dockerfile` | **Legacy** v1 Airflow image. Slated for removal in a follow-up cleanup PR. |
 
 ## Stack

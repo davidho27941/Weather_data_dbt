@@ -119,25 +119,48 @@ Asia/Taipei via `pendulum.datetime(..., tz="Asia/Taipei")` on
 | [`dags/cwa_bronze_daily_load_v_2_0_0.py`](../dags/cwa_bronze_daily_load_v_2_0_0.py) | New: GCS sensor + bronze MERGE |
 | [`dags/cwa_transformation_incremental_v_2_0_0.py`](../dags/cwa_transformation_incremental_v_2_0_0.py) | New: `cosmos.DbtTaskGroup` against `stg` target |
 | [`dags/cwa_source_freshness_v_2_0_0.py`](../dags/cwa_source_freshness_v_2_0_0.py) | New: `dbt source freshness` via `BashOperator` |
-| [`README.md`](../README.md) + [`multilingual_readme/readme_jp.md`](../multilingual_readme/readme_jp.md) | Reframed `dags/` row (no longer "slated for removal"); narrowed legacy-cleanup Future-work bullet to just the root v1 `Dockerfile`; Migration history bullets added for PR #9 and PR #10 |
+| [`dev/`](../dev/) | New: `airflow_bootstrap.sh` (uv venv + Airflow 2.10 + Cosmos 1.14 + dbt-bigquery 1.11) / `airflow_check.sh` (DagBag walk) / `airflow_run.sh` (`airflow standalone`) + a README explaining the validation contract |
+| [`dags/.airflowignore`](../dags/.airflowignore) | New: skips the four `*_v_1_*` DAGs during local + CI loading so missing boto3 / snowflake-connector don't fail the parse |
+| [`.github/workflows/dag_check.yml`](../.github/workflows/dag_check.yml) | New: PR gate that runs `dev/` scripts under uv + `actions/cache` so local and CI exercise the same path |
+| [`.gitignore`](../.gitignore) | Adds `.venv-airflow/`, `.airflow-home/`, `__pycache__/` |
+| [`README.md`](../README.md) + [`multilingual_readme/readme_jp.md`](../multilingual_readme/readme_jp.md) | Reframed `dags/` row (no longer "slated for removal"); added a `dev/` row; narrowed legacy-cleanup Future-work bullet to just the root v1 `Dockerfile`; Migration history bullets added for PR #9 and PR #10 |
 
 ## Test plan
 
-These DAGs aren't deployed; verification is "does it parse + import?"
+These DAGs aren't deployed; verification is "does it parse + import?".
+The local dev environment under `dev/` automates this — bootstrap
+once, then re-run `./dev/airflow_check.sh` after every edit (~5s).
 
-- [ ] `python -c "import dags.cwa_weather_stream_v_2_0_0"` (and same
-      for the other three) — no `ImportError` from missing
-      provider packages (`pip install apache-airflow-providers-google`
-      and `astronomer-cosmos` if running locally).
-- [ ] `airflow dags list` (in an Airflow environment) shows all four
-      `*_v_2_0_0` DAGs.
-- [ ] `airflow dags show cwa_weather_stream_v_2_0_0` renders the
-      `get → check_bucket → (create) → upload` graph.
-- [ ] No syntax errors (lints clean).
+- [x] `./dev/airflow_bootstrap.sh` succeeds (Airflow 2.10.3 + cosmos
+      1.14.1 + dbt-bigquery 1.11.1 installed).
+- [x] `./dev/airflow_check.sh` reports all 4 `*_v_2_0_0` DAGs parse
+      cleanly; cosmos expands the transformation DAG into 24 tasks
+      under WATCHER mode.
+- [x] `.github/workflows/dag_check.yml` runs the same scripts on
+      every PR; first run takes ~3-5 min, cached runs ~30s.
+- [ ] (Optional manual) `./dev/airflow_run.sh` — open the UI at
+      <http://localhost:8080> and inspect the task graph visually.
 
-Not in scope: actually triggering the DAGs end-to-end. That requires
-an Airflow deployment (Composer / self-hosted) which is its own
-project.
+Not in scope: actually triggering the DAGs end-to-end against live
+GCP / CWA. That requires real auth, Airflow Variables, and Connections;
+"parse-clean" is a different signal from "runtime-correct."
+
+## CI gate
+
+[`.github/workflows/dag_check.yml`](../.github/workflows/dag_check.yml)
+runs on every PR touching `dags/`, `weather_data_dbt/`, `dev/`, or the
+workflow itself. It calls the **same scripts** the local dev loop uses
+(`dev/airflow_bootstrap.sh` + `dev/airflow_check.sh`), so:
+
+- A DAG that parses locally also passes CI.
+- A CI failure is reproducible locally with one `./dev/airflow_check.sh`.
+- Future Cosmos / Airflow / openlineage version conflicts (the kind of
+  thing that bit us during initial validation) get caught at PR review
+  time, not at runtime.
+
+`.venv-airflow/` is cached on the runner keyed on the bootstrap script's
+content hash; any change to the install recipe automatically invalidates
+the cache. Steady-state CI run is well under a minute.
 
 ## Out of scope
 
