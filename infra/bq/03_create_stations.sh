@@ -31,10 +31,30 @@ OPTIONS (
 )
 AS
 WITH manned AS (
+  -- Reconstruct the station struct casting StationID / OriginalStationID
+  -- to STRING. Manned stations have purely numeric IDs ('466920'), so the
+  -- autodetect load in 01 inferred INT64 for those two fields; unmanned
+  -- stations include alphanumeric IDs ('C0R860'), correctly inferred as
+  -- STRING. Aligning manned to STRING lets the UNION ALL below succeed.
   SELECT
     'manned' AS ingest_source,
     PARSE_TIMESTAMP('%Y-%m-%d_%H_%M', ingested_at) AS ingest_at,
-    station
+    STRUCT(
+      CAST(station.OriginalStationID AS STRING)  AS OriginalStationID,
+      station.Notes,
+      station.StationStartDate,
+      station.NewStationID,
+      station.StationLongitude,
+      station.Location,
+      station.StationLatitude,
+      station.StationNameEN,
+      station.StationEndDate,
+      station.StationAltitude,
+      station.StationName,
+      station.CountyName,
+      CAST(station.StationID AS STRING)          AS StationID,
+      station.status
+    ) AS station
   FROM \`${PROJECT}.${DATASET}.weather_stations_manned_staging\`,
   UNNEST(records.data.stationStatus.station) AS station
 ),
@@ -76,8 +96,13 @@ SELECT
   SAFE_CAST(station.StationAltitude  AS FLOAT64)                     AS station_altitude,
   SAFE_CAST(station.StationLongitude AS FLOAT64)                     AS station_longitude,
   SAFE_CAST(station.StationLatitude  AS FLOAT64)                     AS station_latitude,
-  SAFE.PARSE_DATE('%Y-%m-%d', NULLIF(station.StationStartDate, ''))  AS start_at,
-  SAFE.PARSE_DATE('%Y-%m-%d', NULLIF(station.StationEndDate, ''))    AS end_at,
+  -- Autodetect at load time already parses ISO-8601 YYYY-MM-DD strings
+  -- into DATE; use the field directly. NULLIF on the empty string does
+  -- not apply because empty strings get coerced to NULL during the JSON
+  -- load (and an apostrophe in this comment would unbalance the bash
+  -- single quotes inside the surrounding command substitution).
+  station.StationStartDate                                           AS start_at,
+  station.StationEndDate                                             AS end_at,
   ingest_source,
   ingest_at
 FROM latest;

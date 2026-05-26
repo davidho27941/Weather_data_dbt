@@ -26,7 +26,7 @@ All scripts read these; export them once if you need to override:
 | `BQ_DATASET` | `weather_raw` | Bronze dataset |
 | `BQ_LOCATION` | `asia-east1` | Dataset region |
 | `GCS_BUCKET` | `side-project-weather-data` | Primary source bucket (new crawler) |
-| `LEGACY_GCS_PATH` | `gs://side-project-dev-s3/weather_record/weather_report_10min-*.json` | Legacy weather observation glob (only used by `01b`) |
+| `LEGACY_GCS_PATH` | `gs://side-project-dev-s3/weather_record/weather_report_10min-*.json` | Legacy weather observation glob (loaded inline by `01`; set to empty to skip) |
 
 ## One-time historical bulk load
 
@@ -37,8 +37,7 @@ Run once to backfill all data accumulated since 2024 (≈70K JSON files,
 cd infra/bq
 
 ./00_create_dataset.sh              # ~1s    — bq mk
-./01_bulk_load_staging.sh           # 5–15 min — bq load 4 staging tables (new crawler, ~13 GiB)
-./01b_bulk_load_legacy_staging.sh   # 5–15 min — OPTIONAL: legacy s3-bucket data (~12 GiB)
+./01_bulk_load_staging.sh           # 10–30 min — bq load 4 staging tables + inline legacy (~25 GiB total)
 ./02_create_observations.sh         # 1–3 min  — UNNEST + UNION ALL → ~3–4 × 10⁷ row bronze
 ./03_create_stations.sh             # < 1 min  — 2 station bronze tables
 ./verify.sh                         # < 1 min  — sanity checks (read these!)
@@ -49,12 +48,13 @@ Each script is idempotent (`--replace` on load, `CREATE OR REPLACE TABLE` on CTA
 so re-running is safe. Total: **~15–35 minutes** wall time. BigQuery cost ≈ **$0.25**
 for the bulk load + first month of bronze storage; daily ongoing load <$0.01/month.
 
-### Legacy data (optional `01b` step)
+### Legacy data (inline in `01`)
 
-If you have older weather observation JSON in a separate bucket
-(e.g. `gs://side-project-dev-s3/weather_record/`), run `01b` after `01` to
-load it into a `*_legacy_staging` table. Step `02` auto-detects the legacy
-staging table and `UNION ALL`s it into the bronze observations table:
+`01_bulk_load_staging.sh` already loads legacy weather observation JSON
+when `LEGACY_GCS_PATH` is set (default points at
+`gs://side-project-dev-s3/weather_record/`). Legacy data goes into
+`observations_legacy_staging`; step `02` auto-detects that table and
+`UNION ALL`s it into the bronze observations table:
 
 - Each legacy row carries `ingest_source = 'legacy'` and `ingest_at = NULL`
   (the `ingested_at` field was crawler-injected and is not present in the
@@ -64,7 +64,8 @@ staging table and `UNION ALL`s it into the bronze observations table:
 - On `(station_id, measure_at)` overlap between the two sources, the new
   crawler row wins (`ORDER BY ingest_at DESC NULLS LAST`).
 
-Skip `01b` if you have no legacy data — `02` falls back to new-staging only.
+Skip the legacy load entirely with `LEGACY_GCS_PATH= ./01_bulk_load_staging.sh`
+— `02` falls back to new-staging only.
 
 ## Daily ongoing load
 
@@ -221,8 +222,7 @@ mis-typed something.
 infra/bq/
 ├── README.md                          ← this file
 ├── 00_create_dataset.sh               ← bq mk --dataset
-├── 01_bulk_load_staging.sh            ← bq load × 4 staging tables (new crawler)
-├── 01b_bulk_load_legacy_staging.sh    ← OPTIONAL: bq load legacy s3-bucket observations
+├── 01_bulk_load_staging.sh            ← bq load × 4 staging tables (new crawler) + inline legacy when LEGACY_GCS_PATH is set
 ├── 02_create_observations.sh          ← CTAS + UNNEST + UNION ALL legacy if present
 ├── 03_create_stations.sh              ← 2 station tables (weather_stations + rain_fall_stations)
 ├── 04_drop_staging.sh                 ← drop *_staging tables (incl. legacy)

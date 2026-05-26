@@ -9,7 +9,8 @@
 # not need a macro.
 #
 # Legacy data handling:
-#   - If observations_legacy_staging exists (from 01b), it is UNION ALL'd in.
+#   - If observations_legacy_staging exists (loaded by 01 when LEGACY_GCS_PATH
+#     is set), it is UNION ALL'd in.
 #   - Legacy rows carry `ingest_source = 'legacy'` and `ingest_at = NULL`.
 #   - On (station_id, measure_at) overlap between legacy and new, the row
 #     with non-null ingest_at (i.e. new crawler) wins.

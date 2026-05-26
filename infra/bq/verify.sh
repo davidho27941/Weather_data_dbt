@@ -43,8 +43,8 @@ FROM \`${PROJECT}.${DATASET}.observations\`;
 "
 
 # 1b. Split by ingest_source — confirms how much came from legacy backfill
-#     vs the new crawler. Only meaningful if 01b_bulk_load_legacy_staging.sh
-#     was run; otherwise expect 100% 'new'.
+#     vs the new crawler. Only meaningful when 01_bulk_load_staging.sh was
+#     run with LEGACY_GCS_PATH set; otherwise expect 100% 'new'.
 run_check "observations: split by ingest_source" "
 SELECT
   ingest_source,
