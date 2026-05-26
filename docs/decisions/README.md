@@ -21,14 +21,16 @@ supersedes the old one and update the old one's Status.
 | [001](001-string-typed-bronze-sentinels.md) | STRING-typed bronze observations preserve CWA sentinels | Accepted | 2026-05-09 |
 | [002](002-dual-column-raw-cleaned-staging.md) | Dual-column raw + cleaned staging pattern | Accepted | 2026-05-10 |
 | [003](003-enforce-dbt-contracts-on-marts.md) | Enforce dbt model contracts on the marts layer | Proposed | 2026-05-11 |
+| [004](004-cwa-precipitation-sunshine-are-daily-cumulative.md) | CWA `Precipitation` and `SunShine` are daily-cumulative, not 10-min windows | Proposed | 2026-05-26 |
 
-## Why only three
+## Why these four
 
-Most decisions in this project are either obvious (GCP, BigQuery, dbt — standard tools) or already documented in PR descriptions. These three are kept here because:
+Most decisions in this project are either obvious (GCP, BigQuery, dbt — standard tools) or already documented in PR descriptions. These four are kept here because:
 
 - **001** explains a non-obvious choice (storing sentinels as STRING rather than nulling them at ingest) that constrains everything downstream.
 - **002** explains the dual-column raw + cleaned pattern, which is the most distinctive piece of staging in this repo.
 - **003** is forward-looking — written before the implementation PR so the design discussion isn't buried under column-by-column type review.
+- **004** documents a CWA-spec semantics finding (`Precipitation` / `SunShine` are daily-cumulative, not 10-min windows) that future reviewers cannot recover from the code alone, and pins the LAG-diff derivation rules that the staging layer now depends on.
 
 For the broader v2 design narrative see [`../redesign_proposal.md`](../redesign_proposal.md). PR descriptions in git history hold what-and-why for individual changes.
 

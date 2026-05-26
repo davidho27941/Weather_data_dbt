@@ -58,7 +58,7 @@ select
     b.relative_humidity_avg, b.relative_humidity_max, b.relative_humidity_min, b.relative_humidity_obs_count,
     b.wind_speed_avg, b.wind_speed_max, b.peak_gust_speed_max,
     b.precipitation_sum, b.precipitation_max, b.precipitation_obs_count,
-    b.sunshine_duration_sec, b.sunshine_obs_count,
+    b.sunshine_duration_sum, b.sunshine_obs_count,
     b.uv_index_max,
     b.observation_count
 from bucketed b

@@ -1,189 +1,230 @@
-# Airflow port of the v2 pipeline (PR #10)
+# CWA `Precipitation` / `SunShine` semantics fix (PR #11)
 
 ## Summary
 
-Adds four Airflow DAGs under `dags/` named `cwa_*_v_2_0_0.py` that
-mirror the v2 production pipeline (currently running on Cloud Run Jobs
-+ Cloud Scheduler). The DAGs are **not wired into production** — the
-Cloud Run Job stack stays canonical. The point is to demonstrate that
-the v2 design is portable to an orchestrator-based deployment.
+`dbt-weekly-build` started failing on three `dbt_utils.accepted_range`
+tests:
 
-This also reframes the legacy `dags/` directory. Previously it was
-"slated for removal" because v1 (Snowflake + S3 + Airflow) is dead.
-Removing it would have been correct but uninformative. Keeping the v1
-files alongside fresh v2 ports makes the migration story visible in
-one folder: same problem, two stacks, both expressed.
+- `precipitation ∈ [0, 200] mm` — 18,497 rows out of range
+- `sunshine_duration_10min ∈ [0, 24] h` — 2,693 rows out of range
+- `uv_index ∈ [0, 20]` — 12 rows out of range
 
-## Mapping
+The thresholds were calibrated on the assumption that O-A0003-001's
+`Precipitation` and `SunshineDuration` report values within the past
+10-minute bucket. Investigation showed they don't: per the CWA spec
+they're **daily-cumulative since Asia/Taipei midnight**, snapshotted
+into each 10-min observation. Calling them `precipitation` /
+`sunshine_duration_10min` and testing them against 10-min thresholds
+was a *semantic* mis-modeling that compiled and ran cleanly — the
+weekly job failures are the visible tip; the silent corruption of
+the rollup facts (which `SUM` the cumulative column) is the bigger
+problem.
 
-| v2 production workload | v2 Airflow port |
-|---|---|
-| `weather-crawler` Cloud Run service (every 10 min, Cloud Scheduler) | [`cwa_weather_stream_v_2_0_0.py`](../dags/cwa_weather_stream_v_2_0_0.py) |
-| `bronze-daily-load` Cloud Run Job (daily 02:00 Asia/Taipei) | [`cwa_bronze_daily_load_v_2_0_0.py`](../dags/cwa_bronze_daily_load_v_2_0_0.py) |
-| `dbt-weekly-build` Cloud Run Job (Mon 02:30 Asia/Taipei) | [`cwa_transformation_incremental_v_2_0_0.py`](../dags/cwa_transformation_incremental_v_2_0_0.py) |
-| `dbt-hourly-freshness` Cloud Run Job (hourly) | [`cwa_source_freshness_v_2_0_0.py`](../dags/cwa_source_freshness_v_2_0_0.py) |
+This PR rebases the dbt project onto the correct semantics. See
+[ADR-004](decisions/004-cwa-precipitation-sunshine-are-daily-cumulative.md)
+for the full decision record.
 
-## Operator choices
+## Reconciliation evidence
 
-Three deliberate decisions worth flagging:
+Station `72S590` (賓朗果園, 農業雨量站), Asia/Taipei date 2025-09-24:
 
-**1. `cosmos` for dbt — and specifically `ExecutionMode.WATCHER`.**
-Matches the v1 `cwa_transformation_incremental_v_1_0_0` DAG that
-already uses `DbtTaskGroup`. `cosmos` parses dbt's manifest at task
-runtime and produces one Airflow task per dbt node, which gives the
-Airflow UI real visibility into dbt graph progress — strictly more
-useful than `BashOperator("dbt build")` lumping everything into one
-opaque step.
-
-On top of that, the dbt transformation DAG runs in **`ExecutionMode.WATCHER`**
-(cosmos 1.14, battle-tested per the Astronomer release notes):
-a single dbt process per DAG run, with one deferrable sensor per
-model polling a producer's XCom stream. The per-task `dbt` startup
-cost (~5-10s) is paid once instead of N times; reported runtime gain
-on real workloads is up to ~80%. `InvocationMode.DBT_RUNNER` is set
-in tandem so dbt is invoked via its Python API (necessary for the
-watcher to receive structured events).
-
-Caveats baked into the DAG comments:
-  - Cosmos ≥ 1.14 required (drops Airflow < 2.9).
-  - `WATCHER` only handles `run` / `seed` / `snapshot`. Tests still
-    run via standard cosmos test operators — at ~80 tests on BQ this
-    is fine; tests are cheap warehouse-side anyway.
-  - `dbt build` itself is not a watcher-supported command, but
-    cosmos's `DbtTaskGroup` decomposes the DAG into model + test
-    pairs by default, so we don't invoke `dbt build` directly. Models
-    get watcher acceleration; tests get the standard path.
-  - Thread count bumped to 8 in the profile mapping — watcher fans
-    models out concurrently inside the single dbt process up to this
-    limit, so a higher `threads` pays off more under WATCHER than
-    under per-model LOCAL.
-
-**2. `BigQueryInsertJobOperator` for the bronze MERGE, not a custom
-operator or BashOperator.**
-The bronze MERGE is just a SQL statement; the v2 Cloud Run Job is the
-runtime, not the logic. `BigQueryInsertJobOperator` is the canonical
-Airflow primitive for submitting a BigQuery query job — it handles
-auth via the existing `google_cloud_default` connection, returns the
-BQ job ID for retry semantics, and Airflow's UI gets the linked job
-URL for free.
-
-**3. `BashOperator` for `dbt source freshness`, not `cosmos`.**
-`cosmos` focuses on the *build* DAG; it doesn't currently wrap
-`dbt source freshness` cleanly. Falling back to `BashOperator` for
-this one task keeps the implementation simple. The DAG also encodes
-the same warn→exit-0 / error→exit-1 mapping that the Cloud Run Job
-uses so the same alert policy (when wired into Airflow's notifier)
-would work without changes.
-
-## What the DAGs assume
-
-- Repository is mounted at `/opt/airflow/dags/repo/` (same convention
-  v1 used).
-- Airflow has the GCP provider package installed and a
-  `google_cloud_default` connection configured against ADC or a SA
-  JSON key.
-- For `cosmos`, a Python venv at `/opt/airflow/dbt_venv/` has
-  `dbt-bigquery` available, and the cosmos package itself is **≥ 1.14**
-  (watcher mode prerequisite). Airflow itself must be **≥ 2.9** for the
-  same reason.
-- Two Airflow Variables: `cwa_auth_token` (for the CWA API) and
-  optionally `gcs_weather_bucket` (defaults to
-  `side-project-weather-data`).
-- Two Airflow Connections: `cwa_real_time_api` (HTTP, base URL of the
-  CWA API) and `google_cloud_default` (GCP).
-
-The DAGs do not assume an Airflow deployment exists — they're code,
-not infra. Running them requires standing up Airflow separately,
-which is out of scope for this PR.
-
-## Schedules
-
-Match the v2 Cloud Scheduler triggers exactly. All declared in
-Asia/Taipei via `pendulum.datetime(..., tz="Asia/Taipei")` on
-`start_date`, so cron expressions are interpreted in local time
-(matching how Cloud Scheduler reads `schedules` in
-`terraform/variables.tf`).
-
-| DAG | Cron | Asia/Taipei |
+| Source | Trajectory | Daily total |
 |---|---|---|
-| `cwa_weather_stream_v_2_0_0` | `*/10 * * * *` | every 10 min |
-| `cwa_bronze_daily_load_v_2_0_0` | `0 2 * * *` | daily 02:00 |
-| `cwa_transformation_incremental_v_2_0_0` | `30 2 * * 1` | Mon 02:30 |
-| `cwa_source_freshness_v_2_0_0` | `0 * * * *` | every hour on the hour |
+| BigQuery `fct_measurements_10min.precipitation`, ordered by `measure_at` | 175.5 at 00:00 UTC (= 08:00 Taipei) → monotone ↑ → 343.0 at 16:00 UTC (= 24:00 Taipei) → 0.0 at 16:10 UTC (= 00:10 Taipei next day) | 343.0 mm |
+| CWA web-portal hourly CSV for the same station/day, `Precp` column summed across 24 hours | 27.0 + 25.5 + ... + 0.0 | **343.0 mm** |
+
+Identical to the 0.1 mm. The intra-day BigQuery trajectory is the
+running cumulative; the post-midnight drop to 0.0 is the next Taipei
+day starting fresh. Same pattern for `SunShine` (CSV hourly sunshine
+sums to BigQuery daily cumulative endpoint).
+
+CWA's `RainfallElement/Past10Min/Precipitation` field — which would
+be a true 10-min window — only exists in `O-A0002`, which the crawler
+doesn't consume. So 10-min window values are derived in staging via
+LAG-diff, not fetched directly.
+
+## What's wrong, in two flavors
+
+**1. The visible failure: tests miscalibrated.**
+`accepted_range [0, 200] mm` against a daily-cumulative column flags
+the cumulative end-of-day total at any wet station with > 200 mm in
+the day. 18k+ rows fail on every typhoon week. This is the alert
+source.
+
+**2. The silent failure: rollup `SUM` is nonsense.**
+`measurement_aggregates.sql` did
+`SUM(precipitation) AS precipitation_sum` where `precipitation` is
+the running daily total. Summing the running total across 10-min
+snapshots produces a quadratically-inflated value that has no
+physical meaning. Every `precipitation_sum` /
+`sunshine_duration_sec` value emitted by
+`fct_measurements_hourly` / `daily` / `weekly` / `monthly` since
+PR #3 has been wrong. This is the worse bug — silent, downstream,
+not flagged by any test.
+
+The fix addresses both.
+
+## Decision (per ADR-004)
+
+Treat O-A0003-001's `Precipitation` and `SunshineDuration` as
+**daily-cumulative**, derive the true 10-min window via LAG-diff
+partitioned by `(station_id, DATE(measure_at, 'Asia/Taipei'))`, and
+expose both columns as dual columns per [ADR-002](decisions/002-dual-column-raw-cleaned-staging.md):
+
+```
+precipitation_daily_cumulative_raw         STRING    raw CWA cumulative
+precipitation_daily_cumulative             FLOAT64   cleaned cumulative (mm)
+precipitation_10min_window                 FLOAT64   LAG-diff derived (mm/10min)
+
+sunshine_duration_daily_cumulative_raw     STRING
+sunshine_duration_daily_cumulative         FLOAT64   cleaned cumulative (h)
+sunshine_duration_10min_window             FLOAT64   LAG-diff derived (h/10min)
+```
+
+Derivation rules baked into the staging SQL:
+
+- **Partition by Asia/Taipei date**, not UTC date — the reset boundary
+  is Taipei midnight (= UTC 16:00), not UTC midnight.
+- `LAG(... IGNORE NULLS)` so sentinel→NULL gaps don't break differencing
+  within a day; a missed obs attributes its increment to the next valid
+  bucket rather than to NULL.
+- First obs of a Taipei day (no LAG row) → derived value = the
+  current cumulative (it's by definition the day's first 10-min total).
+- Monotonicity violation (`current < previous` within the day, e.g.
+  CWA mid-day correction) → derived value = NULL. Don't fabricate
+  negative rainfall.
+
+Rollup facts (`measurement_aggregates` macro) now SUM the derived
+window column instead of the cumulative.
+
+## Test threshold rebase
+
+| Column | Range | Severity | Rationale |
+|---|---|---|---|
+| `precipitation_10min_window` | [0, 200] mm | error | Original threshold; *now* the right column |
+| `precipitation_daily_cumulative` | [0, 2500] mm | warn | Taiwan typhoon daily-station record ~1825 mm (Morakot 2009 阿里山); 2500 mm leaves climate headroom |
+| `sunshine_duration_10min_window` | [0, 1.5] h | error | Physical max 1.0h/h; 1.5 catches scale-of-10 bugs without false-alarming on a slightly late tick |
+| `sunshine_duration_daily_cumulative` | [0, 14] h | warn | Solstice physical max in Taiwan ~14h |
+| `uv_index` | [0, 25] | error | Widened from 20 → 25 (observed legitimate noon-summer 21/22 at a handful of stations) |
+
+Net test count: **65 → 67** (replaced 2 misaligned tests with 4 correctly-aligned tests).
+
+## Folded-in fix: `sunshine_duration_sec` → `sunshine_duration_sum`
+
+The rollup output column was named `_sec` (implying seconds), but CWA
+O-A0003-001 reports sunshine in **hours**. Pre-existing misnaming.
+Since this PR was already touching the macro and all four rollup
+facts, the rename is folded in here. New name matches the existing
+`precipitation_sum` convention (aggregation-type suffix, not unit
+suffix).
 
 ## Changes
 
 | File | Change |
 |---|---|
-| [`dags/cwa_weather_stream_v_2_0_0.py`](../dags/cwa_weather_stream_v_2_0_0.py) | New: HTTP → GCS crawler |
-| [`dags/cwa_bronze_daily_load_v_2_0_0.py`](../dags/cwa_bronze_daily_load_v_2_0_0.py) | New: GCS sensor + bronze MERGE |
-| [`dags/cwa_transformation_incremental_v_2_0_0.py`](../dags/cwa_transformation_incremental_v_2_0_0.py) | New: `cosmos.DbtTaskGroup` against `stg` target |
-| [`dags/cwa_source_freshness_v_2_0_0.py`](../dags/cwa_source_freshness_v_2_0_0.py) | New: `dbt source freshness` via `BashOperator` |
-| [`dev/`](../dev/) | New: `airflow_bootstrap.sh` (uv venv + Airflow 2.10 + Cosmos 1.14 + dbt-bigquery 1.11) / `airflow_check.sh` (DagBag walk) / `airflow_run.sh` (`airflow standalone`) + a README explaining the validation contract |
-| [`dags/.airflowignore`](../dags/.airflowignore) | New: skips the four `*_v_1_*` DAGs during local + CI loading so missing boto3 / snowflake-connector don't fail the parse |
-| [`.github/workflows/dag_check.yml`](../.github/workflows/dag_check.yml) | New: PR gate that runs `dev/` scripts under uv + `actions/cache` so local and CI exercise the same path |
-| [`.gitignore`](../.gitignore) | Adds `.venv-airflow/`, `.airflow-home/`, `__pycache__/` |
-| [`README.md`](../README.md) + [`multilingual_readme/readme_jp.md`](../multilingual_readme/readme_jp.md) | Reframed `dags/` row (no longer "slated for removal"); added a `dev/` row; narrowed legacy-cleanup Future-work bullet to just the root v1 `Dockerfile`; Migration history bullets added for PR #9 and PR #10 |
+| [`weather_data_dbt/models/staging/stg_observations.sql`](../weather_data_dbt/models/staging/stg_observations.sql) | Adds `translated` + `lagged` CTEs; renames `precipitation` / `sunshine_duration_10min` outputs to `*_daily_cumulative*`; emits new `*_10min_window` derived columns |
+| [`weather_data_dbt/macros/measurement_aggregates.sql`](../weather_data_dbt/macros/measurement_aggregates.sql) | `SUM` / `MAX` switched from cumulative to `*_10min_window`; sunshine output renamed `_sec` → `_sum` with explicit unit comment |
+| [`weather_data_dbt/models/marts/measurements/fct_measurements_10min.sql`](../weather_data_dbt/models/marts/measurements/fct_measurements_10min.sql) | Exposes both dual-column sets (cumulative + window) for precipitation and sunshine; docstring expanded with ADR-004 pointer |
+| [`weather_data_dbt/models/marts/measurements/fct_measurements_hourly.sql`](../weather_data_dbt/models/marts/measurements/fct_measurements_hourly.sql) | Reference `sunshine_duration_sum` instead of `sunshine_duration_sec` |
+| [`weather_data_dbt/models/marts/measurements/fct_measurements_daily.sql`](../weather_data_dbt/models/marts/measurements/fct_measurements_daily.sql) | Same rename |
+| [`weather_data_dbt/models/marts/measurements/fct_measurements_weekly.sql`](../weather_data_dbt/models/marts/measurements/fct_measurements_weekly.sql) | Same rename |
+| [`weather_data_dbt/models/marts/measurements/fct_measurements_monthly.sql`](../weather_data_dbt/models/marts/measurements/fct_measurements_monthly.sql) | Same rename |
+| [`weather_data_dbt/models/marts/_models.yml`](../weather_data_dbt/models/marts/_models.yml) | 5 `accepted_range` tests rebased (see threshold table above); `fct_measurements_10min` description rewritten to document the dual-column-on-precip/sunshine pattern |
+| [`weather_data_dbt/tests/sentinel_translation_invariant.sql`](../weather_data_dbt/tests/sentinel_translation_invariant.sql) | Per-column UNIONs updated to reference the renamed `*_daily_cumulative*` staging columns |
+| [`docs/decisions/004-cwa-precipitation-sunshine-are-daily-cumulative.md`](decisions/004-cwa-precipitation-sunshine-are-daily-cumulative.md) | New ADR-004 |
+| [`docs/decisions/README.md`](decisions/README.md) | Index gains 004; "Why these four" replaces "Why only three" |
+| [`README.md`](../README.md) | PR #11 entry in migration history; PR #8 row notes 004 added later |
+
+`int_measurements__cleaned` and the four rollup fact `SELECT` lists
+required no changes beyond the propagated rename — staging's `SELECT *`
+forward chain carries the new columns automatically, and the macro
+change cascades to all four rollups in one diff.
+
+## Breaking changes for downstream consumers
+
+Anyone reading `fct_measurements_10min.precipitation` or
+`fct_measurements_10min.sunshine_duration_10min` directly **will
+break**. The rename is deliberate — leaving the old names behind
+with silently-changed semantics would be worse. Migration:
+
+| Old reference | New reference |
+|---|---|
+| `precipitation` | `precipitation_10min_window` for per-bucket use, `precipitation_daily_cumulative` for running totals |
+| `precipitation_raw` | `precipitation_daily_cumulative_raw` |
+| `sunshine_duration_10min` | `sunshine_duration_10min_window` for per-bucket, `sunshine_duration_daily_cumulative` for running |
+| `sunshine_duration_10min_raw` | `sunshine_duration_daily_cumulative_raw` |
+| Rollup `sunshine_duration_sec` | `sunshine_duration_sum` (unit unchanged: hours) |
+| Rollup `precipitation_sum` | Same name, but value is now correct (was nonsense quadratic) |
+
+There are no known internal downstream consumers reading these
+columns today; the marts dataset is the contract boundary and no ML
+training is wired up yet. Future-proofing for [ADR-003](decisions/003-enforce-dbt-contracts-on-marts.md)
+(marts contract enforcement) is what makes the breaking rename safer
+than leaving the old names in place.
 
 ## Test plan
 
-These DAGs aren't deployed; verification is "does it parse + import?".
-The local dev environment under `dev/` automates this — bootstrap
-once, then re-run `./dev/airflow_check.sh` after every edit (~5s).
-
-- [x] `./dev/airflow_bootstrap.sh` succeeds (Airflow 2.10.3 + cosmos
-      1.14.1 + dbt-bigquery 1.11.1 installed).
-- [x] `./dev/airflow_check.sh` reports all 4 `*_v_2_0_0` DAGs parse
-      cleanly; cosmos expands the transformation DAG into 24 tasks
-      under WATCHER mode.
-- [x] `.github/workflows/dag_check.yml` runs the same scripts on
-      every PR; first run takes ~3-5 min, cached runs ~30s.
-- [ ] (Optional manual) `./dev/airflow_run.sh` — open the UI at
-      <http://localhost:8080> and inspect the task graph visually.
-
-Not in scope: actually triggering the DAGs end-to-end against live
-GCP / CWA. That requires real auth, Airflow Variables, and Connections;
-"parse-clean" is a different signal from "runtime-correct."
-
-## CI gate
-
-[`.github/workflows/dag_check.yml`](../.github/workflows/dag_check.yml)
-runs on every PR touching `dags/`, `weather_data_dbt/`, `dev/`, or the
-workflow itself. It calls the **same scripts** the local dev loop uses
-(`dev/airflow_bootstrap.sh` + `dev/airflow_check.sh`), so:
-
-- A DAG that parses locally also passes CI.
-- A CI failure is reproducible locally with one `./dev/airflow_check.sh`.
-- Future Cosmos / Airflow / openlineage version conflicts (the kind of
-  thing that bit us during initial validation) get caught at PR review
-  time, not at runtime.
-
-`.venv-airflow/` is cached on the runner keyed on the bootstrap script's
-content hash; any change to the install recipe automatically invalidates
-the cache. Steady-state CI run is well under a minute.
+- [x] `dbt parse` clean
+- [x] `dbt compile` clean — 11 models, 67 data tests, 0 errors / warnings
+- [x] `sentinel_translation_invariant` compile output inspected;
+      sentinel families and renamed column references all line up
+- [x] `measurement_aggregates` compile output verified to SUM
+      `*_10min_window`, not cumulative
+- [ ] **Manual verification (post-merge or on dev target):**
+      `dbt build --select +fct_measurements_10min --target dev`,
+      then re-run the reconciliation query against
+      `fct_measurements_10min.precipitation_10min_window` for
+      `station_id='72S590'` on Taipei date 2025-09-24 — the per-hour
+      sums must match the CWA CSV `Precp` column row-for-row.
+- [ ] **Weekly job dry run:** trigger
+      `dbt-weekly-build` Cloud Run Job once after merge to confirm
+      `PASS=N WARN=N ERROR=0`. The relationships warnings for
+      decommissioned stations (`severity: warn`, per pre-existing
+      design) will still appear; they're orthogonal to this PR.
 
 ## Out of scope
 
-- **Deploying these DAGs.** Production stays on Cloud Run Jobs +
-  Cloud Scheduler. If Airflow ever becomes the orchestrator, the
-  decision to switch warrants its own design note + a separate PR.
-- **A v2 port of `cwa_weather_station_stream`.** v2 loads stations
-  via the one-shot `infra/bq/03_create_stations.sh` rather than on a
-  schedule; an Airflow port would need to invent a cadence the v2
-  architecture doesn't have.
-- **A v2 `transformation_refresh` DAG.** v2 treats full-refresh as a
-  manual incident-response operation (see
-  [`docs/runbook.md`](runbook.md) §3c, currently local-only). Adding
-  it as a DAG would imply we'd schedule full-refresh, which we
-  explicitly don't.
-- **Removing the root v1 `Dockerfile`.** Still tracked under Future
-  work for a dedicated cleanup PR.
+- **Crawling O-A0002 for native `Past10Min/Precipitation`.** Discussed
+  in ADR-004's Alternatives section and rejected for now; the
+  derivation is unavoidable for the O-A0003 stations anyway, so a
+  second feed is not worth the operational cost. Revisit if 自動雨量站
+  coverage gaps surface a real consumer need.
+- **Backfilling rollup tables.** The cumulative-SUM corruption in
+  hourly/daily/weekly/monthly is a year+ old. After this PR merges,
+  the incremental MERGE windows will rewrite the last
+  `measurements_lookback_days = 10` days of hourly/daily; weekly and
+  monthly are full-table materializations and will rebuild from
+  scratch. A one-time
+  `dbt build --full-refresh --select fct_measurements_hourly fct_measurements_daily`
+  is the cleanest way to repair historical rollup rows; queued for
+  ops to run post-merge.
+- **`docs/redesign_proposal.md` updates.** That doc is a
+  pre-implementation design snapshot (per its own opening note), not
+  living documentation; references to `sunshine_duration_sec` and the
+  pre-cumulative-fix macro are intentionally preserved as the
+  proposal's original form. Promoting it to an archive doc is a
+  separate cleanup.
+- **`dim_stations` geo metadata for `rain_fall` stations.** During
+  investigation we discovered a separate bug — the crawler's `agri`
+  case used the wrong URL constant, so `rain_fall` station
+  longitude/latitude/county info in `dim_stations` is currently
+  unreliable. Crawler-side fix landed in a separate commit; backfill
+  of `dim_stations` rain_fall geo is its own follow-up PR.
 
 ## References
 
-- v1 reference DAGs: [`dags/cwa_weather_stream_v_1_2_0.py`](../dags/cwa_weather_stream_v_1_2_0.py),
-  [`dags/cwa_transformation_incremental_v_1_0_0.py`](../dags/cwa_transformation_incremental_v_1_0_0.py)
-- v2 production equivalents: [`terraform/cloud_run_jobs.tf`](../terraform/cloud_run_jobs.tf),
-  [`terraform/cloud_scheduler.tf`](../terraform/cloud_scheduler.tf)
-- `cosmos` (dbt + Airflow): <https://github.com/astronomer/astronomer-cosmos>
-- Branch: `feat/airflow-dags-v2` → `main`
+- ADR-004:
+  [`docs/decisions/004-cwa-precipitation-sunshine-are-daily-cumulative.md`](decisions/004-cwa-precipitation-sunshine-are-daily-cumulative.md)
+- ADR-002 (dual-column pattern this PR continues to follow):
+  [`docs/decisions/002-dual-column-raw-cleaned-staging.md`](decisions/002-dual-column-raw-cleaned-staging.md)
+- ADR-001 (bronze stays a faithful CWA mirror — the column rename is
+  staging-layer-only):
+  [`docs/decisions/001-string-typed-bronze-sentinels.md`](decisions/001-string-typed-bronze-sentinels.md)
+- CWA O-A0003-001 spec:
+  `//Station/WeatherElement/Now/Precipitation` (daily cumulative, mm),
+  `//Station/WeatherElement/Now/SunshineDuration` (daily cumulative, h)
+- Crawler entry point that consumes O-A0003-001:
+  [`weather-crawler/weather_crawler/api.py`](../weather-crawler/weather_crawler/api.py)
+- Runbook reference for re-running the Cloud Run Job after a fix:
+  [`docs/runbook.md`](runbook.md) §3
+- Branch: `feat/cwa-cumulative-semantics-fix` → `main`

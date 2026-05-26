@@ -29,7 +29,7 @@ models:
       Original 10-minute granularity weather observations for ML training,
       joined with dim_stations for context.
 
-      Each measurement carries TWO columns:
+      Most fields carry TWO columns (per ADR-002):
         <field>_raw  STRING    original CWA value (preserves sentinels)
         <field>      FLOAT64   sentinel-translated, ready for ML
 
@@ -37,6 +37,18 @@ models:
         '-99' / '-999' / 'X'    → NULL
         wind_direction*: also '990' (calm wind)             → NULL
         precipitation:   '-98' (no rain 6h) / 'T' (trace)   → 0
+
+      Precipitation and sunshine duration are special: per ADR-004 the CWA
+      O-A0003-001 fields are DAILY-CUMULATIVE since Asia/Taipei midnight,
+      not 10-min windows. So those carry THREE columns each:
+        <field>_daily_cumulative_raw   STRING    raw CWA cumulative value
+        <field>_daily_cumulative       FLOAT64   cleaned cumulative total
+        <field>_10min_window           FLOAT64   LAG-diff-derived 10-min amount
+
+      ML pipelines wanting per-bucket precipitation should read the
+      `*_10min_window` column. Governance / debug that needs the daily
+      running total reads `*_daily_cumulative`. The rollup facts
+      (hourly/daily/weekly/monthly) SUM the window column.
 
       `has_*_sensor` flags distinguish "field not measured at this station"
       (NULL because the station does not have that sensor) from
@@ -164,12 +176,38 @@ models:
                 inclusive: true
               config:
                 where: peak_gust_speed is not null
-      - name: precipitation_raw
+      - name: precipitation_daily_cumulative_raw
         description: |
-          Original CWA value (STRING). Sentinels 'X' / 'T' (trace) / '-99' /
-          '-98' (no rain past 6h).
-      - name: precipitation
-        description: Cleaned precipitation in mm. 'T' and '-98' translated to 0.
+          Original CWA value (STRING). Per ADR-004 this is the daily-cumulative
+          rainfall (mm) since Asia/Taipei midnight, NOT a past-10-min amount.
+          Sentinels 'X' / 'T' (trace) / '-99' / '-98' (no rain past 6h).
+      - name: precipitation_daily_cumulative
+        description: |
+          Cleaned daily-cumulative rainfall (mm) since the current Asia/Taipei
+          day's local midnight. Resets at 00:00 Asia/Taipei. 'T' and '-98'
+          translated to 0. See ADR-004 for the spec discovery and reconciliation
+          evidence (BigQuery cumulative endpoint matches CWA web-portal hourly
+          CSV sum exactly).
+        # Warn-tier ceiling: Taiwan typhoon daily-station record is ~1825 mm
+        # (Morakot 2009 at 阿里山). 2500 leaves enough headroom for a
+        # climate-shifted future without re-tuning the alert.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 2500
+                inclusive: true
+              config:
+                where: precipitation_daily_cumulative is not null
+                severity: warn
+      - name: precipitation_10min_window
+        description: |
+          True past-10-min precipitation (mm), derived in staging via LAG
+          diff over (station_id, Asia/Taipei date). NULL at the first obs of
+          each Taipei day's partition only when sentinel gaps prevent the
+          diff; otherwise the first obs's cumulative value is treated as the
+          window value. Monotonicity violations within a day are emitted as
+          NULL (don't fabricate negative rainfall). See ADR-004.
         # 10-min precipitation upper bound: extreme convective cells in
         # Taiwan's mountains have hit ~100 mm in 10 min historically. 200
         # leaves headroom while still catching obvious bugs (negative, or
@@ -181,39 +219,53 @@ models:
                 max_value: 200
                 inclusive: true
               config:
-                where: precipitation is not null
-      - name: sunshine_duration_10min_raw
-        description: Original CWA value (STRING). Only manned stations.
-      - name: sunshine_duration_10min
+                where: precipitation_10min_window is not null
+      - name: sunshine_duration_daily_cumulative_raw
+        description: Original CWA value (STRING). Daily cumulative per ADR-004. Only manned stations.
+      - name: sunshine_duration_daily_cumulative
         description: |
-          Sunshine duration in hours as reported at this 10-min observation
-          timestamp. Despite the `_10min` suffix, CWA appears to report
-          cumulative daily sunshine (since local midnight) rather than
-          sunshine within the 10-min bucket itself: observed range 0-12.1h,
-          p50 ~0.1h, p95 ~8.4h. Only manned (有人站) stations populate this.
-        # Ceiling at 24h is generous for daily cumulative hours (physical
-        # max in Taiwan ~14h at summer solstice). Catches sign errors and
-        # scale-of-10 bugs (240h, etc.) without being so tight that
-        # routine sunny days false-alarm.
+          Cleaned daily-cumulative sunshine duration (hours) since the current
+          Asia/Taipei day's local midnight. Resets at 00:00 Asia/Taipei. Only
+          manned (有人站) stations populate this.
+        # Warn-tier ceiling at 14h: solstice physical max in Taiwan ~14h.
+        # Catches scale-of-10 / sign-error bugs while comfortably covering
+        # any plausible real cumulative-daily value.
         tests:
           - dbt_utils.accepted_range:
               arguments:
                 min_value: 0
-                max_value: 24
+                max_value: 14
                 inclusive: true
               config:
-                where: sunshine_duration_10min is not null
+                where: sunshine_duration_daily_cumulative is not null
+                severity: warn
+      - name: sunshine_duration_10min_window
+        description: |
+          True past-10-min sunshine duration (hours), derived in staging via
+          LAG diff (same partitioning as precipitation_10min_window). Per ADR-004.
+        # Physical max is 1.0h per hour; 1.5 catches scale-of-10 bugs while
+        # tolerating a slightly-late tick from the cumulative source.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1.5
+                inclusive: true
+              config:
+                where: sunshine_duration_10min_window is not null
       - name: uv_index_raw
         description: Original CWA value (STRING). Only manned stations.
       - name: uv_index
         description: Cleaned UV index.
-        # WHO UV scale tops out at "extreme" = 11+. 20 is well above any
+        # WHO UV scale tops out at "extreme" = 11+. 25 is well above any
         # real-world reading; catches sign errors / scale-of-10 bugs.
+        # Widened from 20 to 25 in PR #11 after observing legitimate
+        # noon-summer readings at 21/22 from a small number of stations.
         tests:
           - dbt_utils.accepted_range:
               arguments:
                 min_value: 0
-                max_value: 20
+                max_value: 25
                 inclusive: true
               config:
                 where: uv_index is not null

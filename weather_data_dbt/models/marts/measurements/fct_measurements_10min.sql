@@ -20,6 +20,21 @@
     Includes the station_capabilities flags so a model can choose to drop
     rows with `has_pressure_sensor = false` if it depends on pressure.
 
+    Per ADR-004, CWA O-A0003-001's Precipitation / SunshineDuration are
+    daily-cumulative since Asia/Taipei midnight (NOT 10-min windows).
+    Both views are exposed:
+
+        precipitation_daily_cumulative          running daily total (mm)
+        precipitation_10min_window              true past-10-min amount, LAG-diff derived
+        sunshine_duration_daily_cumulative      running daily total (h)
+        sunshine_duration_10min_window          true past-10-min amount, LAG-diff derived
+
+    ML consumers wanting per-bucket precipitation should use the
+    `*_10min_window` columns. Governance / debug queries that need the
+    daily running total use the `*_daily_cumulative` columns. The rollup
+    facts (hourly/daily/weekly/monthly) SUM the window column — the
+    cumulative one would be nonsense to sum.
+
     Incremental: re-scans last `measurements_lookback_days` to absorb
     late-arriving snapshots.
 #}
@@ -57,7 +72,10 @@ select
     s.station_longitude,
     s.station_latitude,
 
-    -- measurements: raw (STRING, original CWA value) + cleaned (FLOAT64, sentinels translated)
+    -- measurements: raw (STRING, original CWA value) + cleaned (FLOAT64, sentinels translated).
+    -- For precipitation / sunshine_duration the cleaned value is the DAILY
+    -- CUMULATIVE total (per ADR-004); the *_10min_window column is the
+    -- LAG-diff-derived past-10-min amount.
     m.air_temperature_raw,
     m.air_temperature,
     m.air_pressure_raw,
@@ -72,10 +90,12 @@ select
     m.wind_direction_gust,
     m.peak_gust_speed_raw,
     m.peak_gust_speed,
-    m.precipitation_raw,
-    m.precipitation,
-    m.sunshine_duration_10min_raw,
-    m.sunshine_duration_10min,
+    m.precipitation_daily_cumulative_raw,
+    m.precipitation_daily_cumulative,
+    m.precipitation_10min_window,
+    m.sunshine_duration_daily_cumulative_raw,
+    m.sunshine_duration_daily_cumulative,
+    m.sunshine_duration_10min_window,
     m.uv_index_raw,
     m.uv_index,
     m.weather_status_raw,

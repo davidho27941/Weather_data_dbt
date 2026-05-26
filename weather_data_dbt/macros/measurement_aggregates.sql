@@ -13,6 +13,16 @@
      - max for uv_index (peak UV during the bucket)
      - per-column observation counts so consumers can detect partial buckets
 
+   ADR-004 alignment
+   -----------------
+   CWA `Precipitation` and `SunshineDuration` from O-A0003-001 are
+   daily-cumulative since Asia/Taipei midnight, not 10-min windows. The
+   staging layer derives true 10-min amounts as `precipitation_10min_window`
+   and `sunshine_duration_10min_window`; THIS macro must SUM those derived
+   columns. Summing the cumulative column produces "running totals added to
+   running totals" — a quadratically-inflated nonsense value, which is what
+   the pre-ADR-004 macro did.
+
    Argument:
      table_alias  the table alias the columns come from (default 'm').
 
@@ -48,14 +58,17 @@
     max({{ table_alias }}.wind_speed)             as wind_speed_max,
     max({{ table_alias }}.peak_gust_speed)        as peak_gust_speed_max,
 
-    -- precipitation (cumulative within the bucket)
-    sum({{ table_alias }}.precipitation)          as precipitation_sum,
-    max({{ table_alias }}.precipitation)          as precipitation_max,
-    countif({{ table_alias }}.precipitation is not null) as precipitation_obs_count,
+    -- precipitation: SUM/MAX the derived 10-min window column (per ADR-004).
+    -- Summing the daily-cumulative column would be nonsense.
+    sum({{ table_alias }}.precipitation_10min_window)          as precipitation_sum,
+    max({{ table_alias }}.precipitation_10min_window)          as precipitation_max,
+    countif({{ table_alias }}.precipitation_10min_window is not null) as precipitation_obs_count,
 
-    -- sunshine (sum of 10-minute durations gives the bucket total)
-    sum({{ table_alias }}.sunshine_duration_10min) as sunshine_duration_sec,
-    countif({{ table_alias }}.sunshine_duration_10min is not null) as sunshine_obs_count,
+    -- sunshine: SUM the derived 10-min window column (per ADR-004).
+    -- Unit is HOURS (CWA O-A0003-001 reports sunshine duration in hours);
+    -- the prior `_sec` suffix was a pre-existing misnaming, fixed in PR #11.
+    sum({{ table_alias }}.sunshine_duration_10min_window)      as sunshine_duration_sum,
+    countif({{ table_alias }}.sunshine_duration_10min_window is not null) as sunshine_obs_count,
 
     -- uv (peak intensity during the bucket)
     max({{ table_alias }}.uv_index)               as uv_index_max,

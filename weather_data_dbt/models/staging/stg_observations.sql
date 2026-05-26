@@ -46,6 +46,31 @@
     stations (C0/C1 prefix) don't carry those sensors at all. The
     `has_*_sensor` columns let downstream distinguish "field not measured
     at this station" from "measurement missing at this snapshot".
+
+    Daily-cumulative semantics (precipitation / sunshine_duration)
+    --------------------------------------------------------------
+    Per ADR-004: O-A0003-001's `WeatherElement.Now.Precipitation` and
+    `WeatherElement.Now.SunshineDuration` are **daily-cumulative since
+    Asia/Taipei midnight**, not 10-min windows. Bronze stores them
+    verbatim (still named `precipitation` / `sunshine_duration_10min`
+    there, per ADR-001); staging exposes them as
+    `*_daily_cumulative` AND derives a true 10-min window column via
+    LAG-diff partitioned by (station_id, Asia/Taipei date):
+
+        precipitation_daily_cumulative_raw      / precipitation_daily_cumulative
+        precipitation_10min_window              (derived)
+        sunshine_duration_daily_cumulative_raw  / sunshine_duration_daily_cumulative
+        sunshine_duration_10min_window          (derived)
+
+    Derivation rules:
+      - First obs of each Taipei day (no LAG row) → derived = current
+        cumulative (the snapshot itself is the day's first 10-min total).
+      - LAG(... IGNORE NULLS) so sentinel→NULL gaps don't blow up the
+        differencing; a missed observation attributes its increment to
+        the next valid bucket rather than to NULL.
+      - Monotonicity violation (current < previous within the same Taipei
+        day, e.g. CWA mid-day correction) → derived = NULL. Don't
+        fabricate negative rainfall.
 #}
 
 {# Numeric measurement fields where only -99/-999/X are sentinels. #}
@@ -72,6 +97,81 @@ with bronze as (
     -- Set via --vars '{ci_sample_days: 7}' from the GHA workflow; default 0 = full.
     where measure_at >= timestamp_sub(current_timestamp(), interval {{ var('ci_sample_days') | int }} day)
     {%- endif %}
+),
+
+translated as (
+    select
+        -- ids and station context
+        station_id,
+        station_name,
+        station_type,
+
+        -- station capability flags (from station_type, not from data values).
+        -- Only manned stations (有人站) carry the full sensor suite.
+        station_type = '有人站' as has_pressure_sensor,
+        station_type = '有人站' as has_sunshine_sensor,
+        station_type = '有人站' as has_uv_sensor,
+
+        -- ----- numeric measurements: raw + cleaned ---------------------------
+        {% for col in numeric_columns -%}
+        {{ col }} as {{ col }}_raw,
+        {{ cwa_string_to_float(col) }} as {{ col }},
+        {% endfor %}
+
+        -- ----- wind direction: raw + cleaned (extra 990 sentinel) ------------
+        {% for col in wind_direction_columns -%}
+        {{ col }} as {{ col }}_raw,
+        {{ cwa_string_to_float(col, extra_null_numeric=[990]) }} as {{ col }},
+        {% endfor %}
+
+        -- ----- precipitation: raw + cleaned ('T' / -98 → 0; rest → NULL) -----
+        -- Legacy data carries an undocumented -990 sentinel; treat it as NULL.
+        precipitation as precipitation_raw,
+        {{ cwa_string_to_float(
+            'precipitation',
+            zero_strings=['T'],
+            zero_numerics=[-98],
+            extra_null_numeric=[-990]
+        ) }} as precipitation,
+
+        -- ----- string measurements: raw + cleaned ----------------------------
+        weather_status as weather_status_raw,
+        {{ cwa_string_sentinel_to_null('weather_status') }} as weather_status,
+        visibility as visibility_raw,
+        {{ cwa_string_sentinel_to_null('visibility') }} as visibility,
+
+        -- ----- geo + time + provenance ---------------------------------------
+        county_name,
+        county_code,
+        town_name,
+        town_code,
+        station_altitude,
+
+        measure_at,
+        measure_date,
+        ingest_at,
+        ingest_source
+    from bronze
+),
+
+{# Window-diff stage: turn the daily-cumulative `precipitation` /
+   `sunshine_duration_10min` columns into true 10-min window values.
+   See ADR-004 for the full rationale; the key points are:
+     - Partition by Taipei date so the reset boundary matches CWA's spec.
+     - IGNORE NULLS so sentinel→NULL gaps don't break differencing.
+     - Monotonicity-violation guard returns NULL, not a negative value. #}
+lagged as (
+    select
+        *,
+        lag(precipitation ignore nulls) over (
+            partition by station_id, date(measure_at, 'Asia/Taipei')
+            order by measure_at
+        ) as _prev_precip_cum,
+        lag(sunshine_duration_10min ignore nulls) over (
+            partition by station_id, date(measure_at, 'Asia/Taipei')
+            order by measure_at
+        ) as _prev_sunshine_cum
+    from translated
 )
 
 select
@@ -80,41 +180,63 @@ select
     station_name,
     station_type,
 
-    -- station capability flags (from station_type, not from data values).
-    -- Only manned stations (有人站) carry the full sensor suite.
-    station_type = '有人站' as has_pressure_sensor,
-    station_type = '有人站' as has_sunshine_sensor,
-    station_type = '有人站' as has_uv_sensor,
+    -- capability flags
+    has_pressure_sensor,
+    has_sunshine_sensor,
+    has_uv_sensor,
 
-    -- ----- numeric measurements: raw + cleaned ---------------------------
-    {% for col in numeric_columns -%}
-    {{ col }} as {{ col }}_raw,
-    {{ cwa_string_to_float(col) }} as {{ col }},
-    {% endfor %}
+    -- ----- numeric measurements unchanged --------------------------------
+    air_temperature_raw,
+    air_temperature,
+    air_pressure_raw,
+    air_pressure,
+    relative_humidity_raw,
+    relative_humidity,
+    wind_speed_raw,
+    wind_speed,
+    peak_gust_speed_raw,
+    peak_gust_speed,
+    uv_index_raw,
+    uv_index,
 
-    -- ----- wind direction: raw + cleaned (extra 990 sentinel) ------------
-    {% for col in wind_direction_columns -%}
-    {{ col }} as {{ col }}_raw,
-    {{ cwa_string_to_float(col, extra_null_numeric=[990]) }} as {{ col }},
-    {% endfor %}
+    -- ----- wind direction unchanged --------------------------------------
+    wind_direction_raw,
+    wind_direction,
+    wind_direction_gust_raw,
+    wind_direction_gust,
 
-    -- ----- precipitation: raw + cleaned ('T' / -98 → 0; rest → NULL) -----
-    -- Legacy data carries an undocumented -990 sentinel; treat it as NULL.
-    precipitation as precipitation_raw,
-    {{ cwa_string_to_float(
-        'precipitation',
-        zero_strings=['T'],
-        zero_numerics=[-98],
-        extra_null_numeric=[-990]
-    ) }} as precipitation,
+    -- ----- precipitation: cumulative + derived 10-min window -------------
+    -- `precipitation_daily_cumulative` is the raw-ish CWA value (sentinels
+    -- already translated by cwa_string_to_float). Per ADR-004 it is the
+    -- running total since Asia/Taipei midnight, NOT the past 10 minutes.
+    -- `precipitation_10min_window` is the LAG-diff derived true 10-min
+    -- amount; this is what downstream rollups SUM.
+    precipitation_raw as precipitation_daily_cumulative_raw,
+    precipitation     as precipitation_daily_cumulative,
+    case
+        when precipitation is null then null
+        when _prev_precip_cum is null then precipitation
+        when precipitation >= _prev_precip_cum then precipitation - _prev_precip_cum
+        else null
+    end as precipitation_10min_window,
 
-    -- ----- string measurements: raw + cleaned ----------------------------
-    weather_status as weather_status_raw,
-    {{ cwa_string_sentinel_to_null('weather_status') }} as weather_status,
-    visibility as visibility_raw,
-    {{ cwa_string_sentinel_to_null('visibility') }} as visibility,
+    -- ----- sunshine duration: same dual-column treatment -----------------
+    sunshine_duration_10min_raw as sunshine_duration_daily_cumulative_raw,
+    sunshine_duration_10min     as sunshine_duration_daily_cumulative,
+    case
+        when sunshine_duration_10min is null then null
+        when _prev_sunshine_cum is null then sunshine_duration_10min
+        when sunshine_duration_10min >= _prev_sunshine_cum
+            then sunshine_duration_10min - _prev_sunshine_cum
+        else null
+    end as sunshine_duration_10min_window,
 
-    -- ----- geo + time + provenance ---------------------------------------
+    -- ----- strings, geo, time, provenance --------------------------------
+    weather_status_raw,
+    weather_status,
+    visibility_raw,
+    visibility,
+
     county_name,
     county_code,
     town_name,
@@ -125,5 +247,4 @@ select
     measure_date,
     ingest_at,
     ingest_source
-
-from bronze
+from lagged
