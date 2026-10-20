@@ -21,13 +21,16 @@ GCP 正式環境狀態（Cloud Scheduler / Cloud Run Jobs / bronze 表）、2026
 - 完成條件：`git status` 乾淨，分支已推上 origin。
 
 ### 2. 更換 CWA API token
-- 2026-10-20 決定：使用者評估洩漏風險不高，待任務 1、3 完成後再由使用者自行輪換。
+- 2026-10-20 進度：使用者已新增 secret 第 2 版並停用第 1 版（04:28 UTC）。因 Cloud Run 仍指向已停用的第 1 版，
+  立即以 `gcloud run services update --update-secrets CWA_AUTH_TOKEN=codis-api-token:2` 切換（revision 00015）。
+  weather-crawler PR #20 把 CI 部署指令的 `:1` 改為 `:2`；該分支 push 時因 main 的 deploy 閘門尚未恢復（PR #19 未合併）
+  而被 CI 直接部署為 revision 00016（同樣使用第 2 版，無害，但再次印證任務 3 的必要）。04:43 UTC tick 已在 00016 上以新 token 成功抓取。
 - 原因：舊 token 以明文出現在 Cloud Logging 的 `Starting to fetch data from …?Authorization=…` 行，
   2026-06-01 至 2026-10-15 每 10 分鐘一筆；30 天保留期內仍可查到。
-- [ ] 到 CWA 開放資料平台重新產生 API 授權碼
-- [ ] `gcloud secrets versions add codis-api-token --data-file=-`
-- [ ] 把 weather-crawler `.github/workflows/ci_test.yaml` 的 `--set-secrets CWA_AUTH_TOKEN=codis-api-token:1` 改成新版本號，重新部署
-- [ ] 確認下一個 10 分鐘 tick 成功後，在 CWA 平台作廢舊授權碼
+- [x] 到 CWA 開放資料平台重新產生 API 授權碼（2026-10-20，使用者）
+- [x] `gcloud secrets versions add codis-api-token`（第 2 版，2026-10-20，使用者）
+- [~] 把 weather-crawler CI 的 `--set-secrets` 改成 `:2`：PR #20 已開，待合併。服務本身已切到第 2 版。
+- [ ] 在 CWA 平台作廢舊授權碼（新 token 已於 04:43 UTC tick 驗證可用，可以執行）
 - 完成條件：Cloud Run 使用新版本 secret，舊 token 已失效，GCS 持續每天 144 個檔案。
 
 ### 3. 收緊 weather-crawler 的 CI 部署條件
