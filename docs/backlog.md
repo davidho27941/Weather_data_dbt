@@ -11,15 +11,17 @@ GCP 正式環境狀態（Cloud Scheduler / Cloud Run Jobs / bronze 表）、2026
 ## P0 — 資料正在流失或有安全疑慮，本週內處理
 
 ### 1. 保住 dbt 分支上未提交的工作
-- [ ] 在 `feat/cwa-cumulative-semantics-fix` 上 commit 目前工作目錄的 5 個修改檔與 5 份未追蹤文件
+- [x] 2026-10-20：模型/ADR/README 與 runbook、cost_performance、wif_migration（en/zh）、backlog 已分三個 commit 推上 origin（`6e079cd`、`1122786`、`2d6c8e8`）。原規劃 commit 清單：
       （`stg_observations.sql`、`stg_rain_fall_stations.sql`、`_models.yml`、ADR-004、README、
       `docs/runbook.md`、`docs/cost_performance.md`、`docs/wif_migration*.md`、`docs/portfolio_gap_analysis.md`、
       `weather_data_dbt/setup_sa.sh`）
-- [ ] 決定 `portfolio_gap_analysis.md` 是否適合進公開 repo；不適合就移到 repo 外
-- [ ] 處理 `stash@{0}`（掛在 `feat/refactor-sql` 上，2026-05 留下）：套用或丟棄
+- [ ] 決定 `portfolio_gap_analysis.md` 是否適合進公開 repo（repo 為 PUBLIC，內容含面試準備，暫未納入）；不適合就移到 repo 外
+- [ ] `weather_data_dbt/setup_sa.sh` 與 `.github/workflows/README.md` §4 的指令重複，暫未納入；決定刪除或改放 `infra/`
+- [ ] 處理 `stash@{0}`（掛在 `feat/refactor-sql` 上，2026-05 留下）：內容僅為 `.gitignore` 加 `docs/` 一行，已過時，建議 `git stash drop`
 - 完成條件：`git status` 乾淨，分支已推上 origin。
 
 ### 2. 更換 CWA API token
+- 2026-10-20 決定：使用者評估洩漏風險不高，待任務 1、3 完成後再由使用者自行輪換。
 - 原因：舊 token 以明文出現在 Cloud Logging 的 `Starting to fetch data from …?Authorization=…` 行，
   2026-06-01 至 2026-10-15 每 10 分鐘一筆；30 天保留期內仍可查到。
 - [ ] 到 CWA 開放資料平台重新產生 API 授權碼
@@ -31,7 +33,7 @@ GCP 正式環境狀態（Cloud Scheduler / Cloud Run Jobs / bronze 表）、2026
 ### 3. 收緊 weather-crawler 的 CI 部署條件
 - 原因：2026-05-26 把 deploy job 的 `if: github.event.pull_request.merged == true` 註解掉後，
   任何分支 push 都會直接部署到正式環境（10-15 的修復即因此在合併前就上線）。
-- [ ] 把合併條件加回去，或改成只在 `workflow_dispatch` 與 merged PR 時部署
+- [~] 2026-10-20：weather-crawler PR #19 已開，條件改為 `workflow_dispatch || pull_request.merged`；分支 CI 驗證 deploy 顯示 skipped。待合併。
 - 完成條件：feature branch push 只跑 pytest，不跑 deploy。
 
 ---
