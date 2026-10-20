@@ -20,7 +20,7 @@ GCP 正式環境狀態（Cloud Scheduler / Cloud Run Jobs / bronze 表）、2026
 - [ ] 處理 `stash@{0}`（掛在 `feat/refactor-sql` 上，2026-05 留下）：內容僅為 `.gitignore` 加 `docs/` 一行，已過時，建議 `git stash drop`
 - 完成條件：`git status` 乾淨，分支已推上 origin。
 
-### 2. 更換 CWA API token
+### 2. 更換 CWA API token — **完成**（2026-10-20）
 - 2026-10-20 進度：使用者已新增 secret 第 2 版並停用第 1 版（04:28 UTC）。因 Cloud Run 仍指向已停用的第 1 版，
   立即以 `gcloud run services update --update-secrets CWA_AUTH_TOKEN=codis-api-token:2` 切換（revision 00015）。
   weather-crawler PR #20 把 CI 部署指令的 `:1` 改為 `:2`；該分支 push 時因 main 的 deploy 閘門尚未恢復（PR #19 未合併）
@@ -29,15 +29,15 @@ GCP 正式環境狀態（Cloud Scheduler / Cloud Run Jobs / bronze 表）、2026
   2026-06-01 至 2026-10-15 每 10 分鐘一筆；30 天保留期內仍可查到。
 - [x] 到 CWA 開放資料平台重新產生 API 授權碼（2026-10-20，使用者）
 - [x] `gcloud secrets versions add codis-api-token`（第 2 版，2026-10-20，使用者）
-- [~] 把 weather-crawler CI 的 `--set-secrets` 改成 `:2`：PR #20 已開，待合併。服務本身已切到第 2 版。
+- [x] 把 weather-crawler CI 的 `--set-secrets` 改成 `:2`：PR #20 已於 2026-10-20 06:16 UTC 合併，CI 部署 revision 00018 成功（Ready、第 2 版 secret）。
 - [x] 舊授權碼已失效：CWA 平台重新產生授權碼時即同步作廢舊碼，無需另行操作（2026-10-20，使用者確認）
 - 完成條件：Cloud Run 使用新版本 secret，舊 token 已失效，GCS 持續每天 144 個檔案。
-- 狀態：2026-10-20 實質完成（04:43、04:53 UTC tick 已以新 token 成功）。僅剩 PR #20 合併，避免下次 CI 部署指回已停用的第 1 版。
+- 狀態：**完成**（2026-10-20）。附註：PR #19 先合併時觸發的部署因 main 仍指向第 1 版而失敗（revision 00017 未接流量，服務未中斷），PR #20 合併後恢復。
 
-### 3. 收緊 weather-crawler 的 CI 部署條件
+### 3. 收緊 weather-crawler 的 CI 部署條件 — **完成**（2026-10-20）
 - 原因：2026-05-26 把 deploy job 的 `if: github.event.pull_request.merged == true` 註解掉後，
   任何分支 push 都會直接部署到正式環境（10-15 的修復即因此在合併前就上線）。
-- [~] 2026-10-20：weather-crawler PR #19 已開，條件改為 `workflow_dispatch || pull_request.merged`；分支 CI 驗證 deploy 顯示 skipped。待合併。
+- [x] 2026-10-20：weather-crawler PR #19 已合併，deploy 條件為 `workflow_dispatch || pull_request.merged`；分支 CI 驗證 deploy 顯示 skipped。
 - 完成條件：feature branch push 只跑 pytest，不跑 deploy。
 
 ---
