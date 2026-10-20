@@ -15,8 +15,8 @@ GCP 正式環境狀態（Cloud Scheduler / Cloud Run Jobs / bronze 表）、2026
       （`stg_observations.sql`、`stg_rain_fall_stations.sql`、`_models.yml`、ADR-004、README、
       `docs/runbook.md`、`docs/cost_performance.md`、`docs/wif_migration*.md`、`docs/portfolio_gap_analysis.md`、
       `weather_data_dbt/setup_sa.sh`）
-- [ ] 決定 `portfolio_gap_analysis.md` 是否適合進公開 repo（repo 為 PUBLIC，內容含面試準備，暫未納入）；不適合就移到 repo 外
-- [ ] `weather_data_dbt/setup_sa.sh` 與 `.github/workflows/README.md` §4 的指令重複，暫未納入；決定刪除或改放 `infra/`
+- [x] `portfolio_gap_analysis.md` 決定不入庫（2026-10-20）；已加入本機 `.git/info/exclude`，檔案保留在工作目錄
+- [x] `weather_data_dbt/setup_sa.sh` 決定不入庫（2026-10-20）；已加入本機 `.git/info/exclude`
 - [ ] 處理 `stash@{0}`（掛在 `feat/refactor-sql` 上，2026-05 留下）：內容僅為 `.gitignore` 加 `docs/` 一行，已過時，建議 `git stash drop`
 - 完成條件：`git status` 乾淨，分支已推上 origin。
 
