@@ -30,8 +30,9 @@ GCP 正式環境狀態（Cloud Scheduler / Cloud Run Jobs / bronze 表）、2026
 - [x] 到 CWA 開放資料平台重新產生 API 授權碼（2026-10-20，使用者）
 - [x] `gcloud secrets versions add codis-api-token`（第 2 版，2026-10-20，使用者）
 - [~] 把 weather-crawler CI 的 `--set-secrets` 改成 `:2`：PR #20 已開，待合併。服務本身已切到第 2 版。
-- [ ] 在 CWA 平台作廢舊授權碼（新 token 已於 04:43 UTC tick 驗證可用，可以執行）
+- [x] 舊授權碼已失效：CWA 平台重新產生授權碼時即同步作廢舊碼，無需另行操作（2026-10-20，使用者確認）
 - 完成條件：Cloud Run 使用新版本 secret，舊 token 已失效，GCS 持續每天 144 個檔案。
+- 狀態：2026-10-20 實質完成（04:43、04:53 UTC tick 已以新 token 成功）。僅剩 PR #20 合併，避免下次 CI 部署指回已停用的第 1 版。
 
 ### 3. 收緊 weather-crawler 的 CI 部署條件
 - 原因：2026-05-26 把 deploy job 的 `if: github.event.pull_request.merged == true` 註解掉後，
