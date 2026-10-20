@@ -17,9 +17,13 @@ select
     station_id,
     '農業雨量站' as station_type,
     station_name,
-    city_code,
+    -- Cast city_code / town_code to STRING. Bronze's bq autodetect inferred
+    -- INT64 from the all-numeric values, but the union with CWA stations
+    -- (where these codes are STRING or NULL) needs aligned types, and
+    -- treating identifier codes as numeric is the wrong abstraction anyway.
+    cast(city_code as string) as city_code,
     city_name,
-    town_code,
+    cast(town_code as string) as town_code,
     town_name,
     station_latitude,
     station_longitude,

@@ -178,16 +178,21 @@ models:
                 where: peak_gust_speed is not null
       - name: precipitation_daily_cumulative_raw
         description: |
-          Original CWA value (STRING). Per ADR-004 this is the daily-cumulative
-          rainfall (mm) since Asia/Taipei midnight, NOT a past-10-min amount.
-          Sentinels 'X' / 'T' (trace) / '-99' / '-98' (no rain past 6h).
+          Original CWA value (STRING) verbatim from O-A0003-001's
+          `WeatherElement.Now.Precipitation`. Per ADR-004 this is the
+          daily-cumulative rainfall (mm) since Asia/Taipei midnight, NOT a
+          past-10-min amount. **Note**: at Taipei 00:00 sharp this raw value
+          still carries the *previous* Taipei day's daily total — CWA's
+          internal reset lags into the 00:10 sample. Sentinels 'X' / 'T'
+          (trace) / '-99' / '-98' (no rain past 6h).
       - name: precipitation_daily_cumulative
         description: |
           Cleaned daily-cumulative rainfall (mm) since the current Asia/Taipei
-          day's local midnight. Resets at 00:00 Asia/Taipei. 'T' and '-98'
-          translated to 0. See ADR-004 for the spec discovery and reconciliation
-          evidence (BigQuery cumulative endpoint matches CWA web-portal hourly
-          CSV sum exactly).
+          day's local midnight. **Strict 00:00 reset enforced** (per ADR-004):
+          at Taipei 00:00 sharp this column is overridden to 0.0 even though
+          the raw column may still carry CWA's previous-day leftover; the
+          two columns disagree by design at that single boundary timestamp.
+          'T' and '-98' translated to 0.
         # Warn-tier ceiling: Taiwan typhoon daily-station record is ~1825 mm
         # (Morakot 2009 at 阿里山). 2500 leaves enough headroom for a
         # climate-shifted future without re-tuning the alert.
@@ -221,12 +226,22 @@ models:
               config:
                 where: precipitation_10min_window is not null
       - name: sunshine_duration_daily_cumulative_raw
-        description: Original CWA value (STRING). Daily cumulative per ADR-004. Only manned stations.
+        description: |
+          Original CWA value (STRING) verbatim from O-A0003-001. Daily
+          cumulative per ADR-004; only manned (有人站) stations populate it.
+          **Note**: at Taipei 00:00 the raw value carries the previous Taipei
+          day's daily total — CWA's reset lags into the 00:10 sample.
       - name: sunshine_duration_daily_cumulative
         description: |
-          Cleaned daily-cumulative sunshine duration (hours) since the current
-          Asia/Taipei day's local midnight. Resets at 00:00 Asia/Taipei. Only
-          manned (有人站) stations populate this.
+          Cleaned daily-cumulative sunshine duration (hours) since the
+          current Asia/Taipei day's local midnight. **Strict 00:00 reset
+          enforced** (per ADR-004): at Taipei 00:00 sharp this column is
+          overridden to 0.0 even though the raw column may still carry
+          CWA's previous-day leftover. Only manned (有人站) stations populate
+          this. Daily endpoint may differ from CWA's web-portal CSV (CODiS)
+          by ~1-2 hours due to a known CWA-internal inconsistency between
+          the O-A0003-001 API and the CODiS post-processed hourly output;
+          we crawl O-A0003-001 and treat that as the contract.
         # Warn-tier ceiling at 14h: solstice physical max in Taiwan ~14h.
         # Catches scale-of-10 / sign-error bugs while comfortably covering
         # any plausible real cumulative-daily value.

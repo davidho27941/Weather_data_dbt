@@ -154,24 +154,95 @@ translated as (
     from bronze
 ),
 
-{# Window-diff stage: turn the daily-cumulative `precipitation` /
-   `sunshine_duration_10min` columns into true 10-min window values.
-   See ADR-004 for the full rationale; the key points are:
-     - Partition by Taipei date so the reset boundary matches CWA's spec.
-     - IGNORE NULLS so sentinel→NULL gaps don't break differencing.
-     - Monotonicity-violation guard returns NULL, not a negative value. #}
+{# Strict 00:00 reset enforcement (per ADR-004 §X).
+
+   Empirical observation (verified against GCS raw JSON, see ADR-004
+   "Reconciliation evidence" and "GCS verification" sections):
+   CWA O-A0003-001's `Now.Precipitation` and `Now.SunshineDuration`
+   cumulatives do NOT reset exactly at Taipei 00:00. The 00:00 sample
+   still carries the *previous* Taipei day's daily total verbatim; the
+   reset happens between 00:00 and 00:10 (the 00:10 sample reads 0.0).
+   For station 467571 (新竹) on Taipei 2026-04-27 the BQ trajectory is:
+       23:50 of 04-26 → 13.0
+       00:00 of 04-27 → 13.0   ← carryover, raw value
+       00:10 of 04-27 → 0.0    ← reset done
+
+   Our contract (this project's model) is: "Taipei 00:00 IS the daily
+   reset boundary; the cumulative restarts at 0 there". To enforce that
+   contract on the cleaned column we override the 00:00 sample's
+   cleaned cumulative to 0.0 here. The `*_raw` column is NOT touched,
+   so governance / audit can still recover CWA's literal value (13.0
+   in the example above). This is the same dual-column principle as
+   sentinel translation (per ADR-001 / ADR-002): bronze + *_raw stay
+   faithful to CWA, *_cleaned reflects our consumption model.
+
+   We deliberately accept that the daily cumulative ENDPOINT in our
+   dataset can differ from CWA's web-portal hourly CSV (CODiS) by ~1-2
+   hours/day for sunshine and ~1-2 mm/day for precipitation — that is
+   a known CWA-internal inconsistency between the O-A0003-001 API
+   (which we crawl) and CODiS post-processed hourly output (which we
+   do not). Documented in ADR-004's "Known caveats" section.
+#}
+enforced_reset as (
+    select * replace(
+        case
+            when extract(hour from measure_at at time zone 'Asia/Taipei') = 0
+             and extract(minute from measure_at at time zone 'Asia/Taipei') = 0
+             and precipitation is not null
+            then 0.0
+            else precipitation
+        end as precipitation,
+        case
+            when extract(hour from measure_at at time zone 'Asia/Taipei') = 0
+             and extract(minute from measure_at at time zone 'Asia/Taipei') = 0
+             and sunshine_duration_10min is not null
+            then 0.0
+            else sunshine_duration_10min
+        end as sunshine_duration_10min
+    )
+    from translated
+),
+
+{# Window-diff stage: turn the (now strict-00:00-reset-enforced)
+   daily-cumulative columns into true 10-min window values.
+     - Partition by Taipei date so the boundary aligns with the reset
+       we just enforced.
+     - Plain LAG (NOT IGNORE NULLS): a single sentinel observation
+       blanks out the window value at that row AND the next row. This
+       sacrifices the "preserve total across sentinel gaps" property
+       for per-bucket correctness — bridging a gap would attribute
+       multiple buckets' worth of increment to one bucket and produce
+       physically-impossible window values.
+     - Timestamp-gap guard: if measure_at jumps > 15 minutes between
+       two rows (a real observation gap, not a sentinel), the window
+       value is NULL — the difference is not a 10-min quantity.
+     - First row of partition (Taipei 00:00): LAG returns NULL,
+       window is NULL. Even though we overrode the cumulative to 0,
+       we don't know what cum was at 23:59:59 of the previous Taipei
+       day (it would have been the prev day's daily total, in a
+       different partition). One observation per station per day
+       forgone; 0.7% of the per-station daily samples.
+     - Monotonicity violation (`current < previous` within partition):
+       with strict 00:00 reset enforced, this should not occur on the
+       00:10 boundary anymore. Mid-day violations would indicate a
+       rare CWA correction; return NULL so accepted_range tests can
+       surface the anomaly. #}
 lagged as (
     select
         *,
-        lag(precipitation ignore nulls) over (
+        lag(precipitation) over (
             partition by station_id, date(measure_at, 'Asia/Taipei')
             order by measure_at
         ) as _prev_precip_cum,
-        lag(sunshine_duration_10min ignore nulls) over (
+        lag(sunshine_duration_10min) over (
             partition by station_id, date(measure_at, 'Asia/Taipei')
             order by measure_at
-        ) as _prev_sunshine_cum
-    from translated
+        ) as _prev_sunshine_cum,
+        lag(measure_at) over (
+            partition by station_id, date(measure_at, 'Asia/Taipei')
+            order by measure_at
+        ) as _prev_measure_at
+    from enforced_reset
 )
 
 select
@@ -210,13 +281,22 @@ select
     -- already translated by cwa_string_to_float). Per ADR-004 it is the
     -- running total since Asia/Taipei midnight, NOT the past 10 minutes.
     -- `precipitation_10min_window` is the LAG-diff derived true 10-min
-    -- amount; this is what downstream rollups SUM.
+    -- amount, NULL when we cannot reliably attribute the increment to a
+    -- single 10-min window (first row of Taipei day, sentinel on previous
+    -- row, > 15 min gap between consecutive observations, or monotonicity
+    -- violation). Rollup facts SUM this column.
     precipitation_raw as precipitation_daily_cumulative_raw,
     precipitation     as precipitation_daily_cumulative,
     case
         when precipitation is null then null
-        when _prev_precip_cum is null then precipitation
+        when _prev_precip_cum is null then null
+        when timestamp_diff(measure_at, _prev_measure_at, minute) > 15 then null
         when precipitation >= _prev_precip_cum then precipitation - _prev_precip_cum
+        -- Monotonicity violation: a rare CWA mid-day correction. Don't
+        -- fabricate negative rainfall; flag as NULL so accepted_range
+        -- tests can surface the anomaly. With strict 00:00 reset
+        -- enforcement (see enforced_reset CTE above), the reset boundary
+        -- no longer triggers this branch in normal operation.
         else null
     end as precipitation_10min_window,
 
@@ -225,9 +305,11 @@ select
     sunshine_duration_10min     as sunshine_duration_daily_cumulative,
     case
         when sunshine_duration_10min is null then null
-        when _prev_sunshine_cum is null then sunshine_duration_10min
+        when _prev_sunshine_cum is null then null
+        when timestamp_diff(measure_at, _prev_measure_at, minute) > 15 then null
         when sunshine_duration_10min >= _prev_sunshine_cum
             then sunshine_duration_10min - _prev_sunshine_cum
+        -- Monotonicity violation: same rationale as precipitation above.
         else null
     end as sunshine_duration_10min_window,
 

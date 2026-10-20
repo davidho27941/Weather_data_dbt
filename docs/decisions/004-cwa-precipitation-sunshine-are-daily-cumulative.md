@@ -40,6 +40,53 @@ The two datasets reconcile **exactly to the 0.1 mm**. The intra-day BigQuery tra
 
 CWA's `RainfallElement/Past10Min/Precipitation` field — which *would* be a true 10-min window — exists in `O-A0002` (自動雨量站), but is not in `O-A0003-001`. The crawler ([`weather-crawler/weather_crawler/api.py`](../../weather-crawler/weather_crawler/api.py)) only consumes `O-A0003-001`, so 10-min window values are not available from the source. They have to be **derived**.
 
+### Reset boundary: Taipei 00:00 carries previous day's leftover
+
+A second empirical observation during PR #11's verification, confirmed by reading the GCS raw JSONs directly: CWA's cumulative reset does NOT happen at Taipei 00:00 sharp. It happens between 00:00 and 00:10. The 00:00 sample STILL carries the previous Taipei day's daily total verbatim; the reset is visible in the 00:10 sample.
+
+Station `467571` (新竹) across the 04-26 → 04-27 Taipei boundary (verified from GCS files `2026-04-26/15_53.json` and onward):
+
+| Taipei timestamp | UTC | sunshine cumulative |
+|---|---|---|
+| 04-26 23:50 | 04-26 15:50 | 13.0 (end of Taipei 04-26) |
+| **04-27 00:00** | **04-26 16:00** | **13.0 (CWA leftover, NOT reset yet)** |
+| 04-27 00:10 | 04-26 16:10 | 0.0 (reset done) |
+
+The Taipei 04-27 partition's first row therefore has a cumulative value belonging semantically to Taipei 04-26. Without a correction, the downstream LAG-diff window derivation would either return NULL (lose information) or attribute the carryover to a 10-min window (producing 12h+ sunshine values, which is the exact symptom that originally failed the weekly job's `accepted_range` tests).
+
+### Source verification (no duplicates, native CWA values)
+
+To rule out duplicate-row / dedup bugs in the load pipeline, PR #11 verified directly against the GCS source for `467571` on `2026-04-26`:
+
+- 144 / 144 GCS JSON files present for the Taipei-day window (file names are UTC-based; one file per 10-min cadence) — no missing crawler runs
+- Each file has 362 stations and station `467571` appears exactly once per file — no in-file duplicates
+- The 2 records missing from bronze for Taipei `03:40` and `04:10` are CWA-side gaps (CWA's API responses for those snapshots simply did not include the corresponding `ObsTime` values); both are nighttime so cumulative was 0 — they do not affect any daily endpoint
+- The boundary value of 13.0 is **CWA's literal API value** at Taipei 04-26 23:40 onward (verified by reading `15_53.json`); the bronze pipeline transports it faithfully
+
+This rules out the bronze-load layer; the discrepancies discussed below are upstream of where this project's pipeline begins.
+
+### Known caveat: O-A0003-001 vs CODiS daily totals
+
+CWA publishes the same observations through (at least) two products:
+
+- The **O-A0003-001 Open Data API** — what this crawler consumes; 10-min snapshots with the cumulative columns described above
+- The **CODiS web portal hourly CSV** — post-processed hourly aggregates available for download from <https://codis.cwa.gov.tw/>
+
+For station `467571` on Taipei 2026-04-26 the two products disagree on the daily endpoint:
+
+| Source | Daily sunshine total |
+|---|---|
+| BQ `sunshine_duration_daily_cumulative` at Taipei 23:50 (from O-A0003-001) | 13.0 h |
+| CODiS hourly CSV, `SunShine` column summed across hours 01-24 | 11.8 h |
+
+Same direction (API > CODiS) and similar magnitude (~1-2 h/day for sunshine, ~1-2 mm/day for precipitation in spot checks) appears consistently. CODiS caps hourly `SunShine` at 1.0 h/h whereas the O-A0003-001 minute-level cumulative does not; CWA's internal post-processing produces the difference.
+
+This is a CWA-internal inconsistency we cannot resolve from outside. We pin O-A0003-001 as the project's data contract and disclose the discrepancy:
+
+- This ADR documents it (you are reading the disclosure)
+- The marts column descriptions in [`_models.yml`](../../weather_data_dbt/models/marts/_models.yml) link back here
+- Any future open-data release MUST surface this caveat in the data card / README so consumers comparing this dataset against CODiS CSVs are not confused
+
 ### Downstream impact
 
 The mis-modeling has propagated to two places that matter:
@@ -63,10 +110,12 @@ sunshine_duration_10min_window             FLOAT64   derived
 
 Derivation rules:
 
-- Window: `PARTITION BY station_id, DATE(measure_at, 'Asia/Taipei') ORDER BY measure_at`.
-- `LAG(... IGNORE NULLS)` so sentinel→NULL gaps don't break differencing within a day; a single bad observation attributes its missed increment to the next valid bucket rather than to NULL.
-- First observation of each Taipei day (no previous row in partition) → derived value = current cumulative (the very first 10-min snapshot is by definition the full window).
-- Monotonicity violation (`current < previous`, e.g. mid-day CWA correction or clock skew) → derived value = NULL. Don't fabricate negative rainfall.
+- **Strict 00:00 reset enforcement (new in PR #11).** In an `enforced_reset` staging CTE, at Taipei 00:00 sharp (UTC equivalent: H=0, M=0 in `Asia/Taipei` timezone) the **cleaned** cumulative column is overridden to `0.0` when non-null. The `*_raw` column is NOT touched and continues to carry CWA's literal value (e.g. 13.0 for `467571` 04-27). This enforces the project's contract that "Taipei 00:00 IS the daily reset point" against CWA's actual behavior of resetting between 00:00 and 00:10. Same dual-column principle as sentinel translation (per ADR-001 / ADR-002): bronze + `*_raw` mirror CWA, `*_cleaned` reflects our consumption model.
+- **Window**: `PARTITION BY station_id, DATE(measure_at, 'Asia/Taipei') ORDER BY measure_at`.
+- **Plain `LAG`** (NOT `IGNORE NULLS`, which BigQuery does not support on `LAG` anyway): if the previous physical row's cleaned cumulative is NULL (sentinel) or the current row's is NULL, the derived window is NULL. We sacrifice the "preserve total across sentinel gaps" property for per-bucket correctness — bridging a gap would attribute multiple buckets' worth of increment to one bucket and produce physically-impossible values.
+- **Timestamp-gap guard**: if `TIMESTAMP_DIFF(measure_at, _prev_measure_at, MINUTE) > 15`, the derived window is NULL. A station that went offline for hours and came back with a fresh cumulative reading cannot have its multi-hour increment attributed to a single 10-min bucket.
+- **First observation of each Taipei day (no LAG row in partition) → NULL.** Even with the strict-reset override providing a clean `0.0` at 00:00, we still do not know the cumulative at 23:59:59 of the previous Taipei day (which lives in the prior partition and we explicitly do not read across partition boundaries to keep the LAG-diff a daily-local computation). One observation per station per day forgone — 0.7% of the per-station daily samples; acceptable trade for the partition-isolation property.
+- **Monotonicity violation** (`current < previous`, e.g. a rare CWA mid-day correction) → derived value = NULL. With strict 00:00 reset enforced upstream, this branch should not fire at the 00:10 boundary in normal operation; if it ever does fire it indicates a real upstream anomaly worth flagging via `accepted_range` rather than smoothing over.
 
 The bronze layer **does not change**. The bronze column is still named `precipitation` (because it mirrors the CWA payload field name, per [ADR-001](001-string-typed-bronze-sentinels.md)); the rename happens only at the staging boundary where semantic naming starts to matter for downstream consumers.
 
